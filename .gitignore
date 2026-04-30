@@ -1,3 +1,4 @@
+# AkanshaLive Project - Root Gitignore
 node_modules/
 .env
 .env.local
