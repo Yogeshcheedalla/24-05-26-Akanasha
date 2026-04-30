@@ -14,7 +14,10 @@ function createSessionId() {
 export default function ChatWorkspace() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
-  const [sessionId, setSessionId] = useState('default');
+  const [sessionId, setSessionId] = useState(() => {
+    if (typeof window === 'undefined') return createSessionId();
+    return sessionStorage.getItem('akansha-current-session') || createSessionId();
+  });
   const [chatStats, setChatStats] = useState({ messages: 0, tokens: 0 });
   const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
 
@@ -22,6 +25,10 @@ export default function ChatWorkspace() {
     setSessionId(nextSessionId ?? createSessionId());
     setIsPromptModalOpen(false);
   };
+
+  React.useEffect(() => {
+    sessionStorage.setItem('akansha-current-session', sessionId);
+  }, [sessionId]);
 
   React.useEffect(() => {
     const handleTogglePanel = () => {

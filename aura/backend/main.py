@@ -3,6 +3,13 @@ import os
 import re
 import secrets
 import asyncio
+import base64
+import ctypes
+import hashlib
+import hmac
+import subprocess
+import tempfile
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -10,7 +17,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +25,11 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import edge_tts
+
+try:
+    from win10toast import ToastNotifier
+except Exception:  # pragma: no cover - optional runtime dependency
+    ToastNotifier = None  # type: ignore[assignment]
 
 load_dotenv(override=True)
 
@@ -36,6 +48,11 @@ from .ai_engine import generate_chat_stream, analyze_intent_and_memory
 from .automation import execute_desktop_command
 
 app = FastAPI(title="Akansha AI Engine")
+planner_reminder_registry: dict[str, dict[str, Any]] = {}
+planner_scheduler_task: asyncio.Task | None = None
+planner_reminder_history: list[dict[str, Any]] = []
+toast_notifier = ToastNotifier() if ToastNotifier else None
+REMINDER_MARKER_DIR = Path(tempfile.gettempdir()) / "akansha-reminders"
 
 # @app.on_event("startup")
 # def reset_database():
@@ -65,6 +82,12 @@ class ChatRequest(BaseModel):
     language_preference: str | None = None
 
 
+class ChatMessageSaveRequest(BaseModel):
+    role: str
+    content: str
+    session_id: str
+
+
 class ProfileUpdateRequest(BaseModel):
     full_name: str | None = None
     email: str | None = None
@@ -92,6 +115,7 @@ class SocialReplyRequest(BaseModel):
 
 class SocialSetupRequest(BaseModel):
     config: dict[str, str]
+    test_connection: bool = True
 
 
 class TTSRequest(BaseModel):
@@ -99,6 +123,22 @@ class TTSRequest(BaseModel):
     voice_gender: str = "female"
     voice_tone: str | None = None
     language_mode: str | None = None
+
+
+class DesktopNotificationRequest(BaseModel):
+    title: str
+    body: str
+
+
+class PlannerReminderSyncItem(BaseModel):
+    reminder_id: str
+    title: str
+    body: str
+    reminder_at: str
+
+
+class PlannerReminderSyncRequest(BaseModel):
+    reminders: list[PlannerReminderSyncItem]
 
 
 class BrowserAutomationPermissionsRequest(BaseModel):
@@ -262,6 +302,276 @@ async def generate_edge_tts_audio(text: str, voice_gender: str, voice_tone: str 
     return b"".join(audio_chunks)
 
 
+def show_windows_notification(title: str, body: str) -> None:
+    clean_title = normalize_reminder_text(title) or "Akansha reminder"
+    clean_body = normalize_reminder_text(body) or "You asked Akansha to remind you."
+
+    if toast_notifier is not None:
+        try:
+            toast_notifier.show_toast(
+                clean_title,
+                clean_body,
+                duration=10,
+                threaded=False,
+            )
+            return
+        except Exception:
+            pass
+
+    safe_title = clean_title.replace("'", "''")
+    safe_body = clean_body.replace("'", "''")
+    script = f"""
+Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$template = "<toast><visual><binding template='ToastGeneric'><text>{safe_title}</text><text>{safe_body}</text></binding></visual><audio silent='false'/></toast>"
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml($template)
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Akansha Planner').Show($toast)
+"""
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    popup_script = f"""
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName WindowsBase
+
+$window = New-Object System.Windows.Window
+$window.Title = 'Akansha reminder'
+$window.Width = 420
+$window.Height = 180
+$window.Topmost = $true
+$window.ResizeMode = 'NoResize'
+$window.WindowStartupLocation = 'Manual'
+$window.Left = [System.Windows.SystemParameters]::WorkArea.Right - 440
+$window.Top = [System.Windows.SystemParameters]::WorkArea.Bottom - 220
+$window.Background = '#111827'
+$window.Foreground = '#F8FAFC'
+
+$stack = New-Object System.Windows.Controls.StackPanel
+$stack.Margin = '18'
+
+$titleBlock = New-Object System.Windows.Controls.TextBlock
+$titleBlock.Text = '{safe_title}'
+$titleBlock.FontSize = 18
+$titleBlock.FontWeight = 'Bold'
+$titleBlock.Margin = '0,0,0,10'
+$titleBlock.TextWrapping = 'Wrap'
+$stack.Children.Add($titleBlock) | Out-Null
+
+$bodyBlock = New-Object System.Windows.Controls.TextBlock
+$bodyBlock.Text = '{safe_body}'
+$bodyBlock.FontSize = 13
+$bodyBlock.Foreground = '#CBD5E1'
+$bodyBlock.TextWrapping = 'Wrap'
+$stack.Children.Add($bodyBlock) | Out-Null
+
+$window.Content = $stack
+
+$timer = New-Object System.Windows.Threading.DispatcherTimer
+$timer.Interval = [TimeSpan]::FromSeconds(12)
+$timer.Add_Tick({{
+    $timer.Stop()
+    $window.Close()
+}})
+$timer.Start()
+
+$window.ShowDialog() | Out-Null
+"""
+    subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-Sta", "-Command", popup_script],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def normalize_reminder_text(value: str) -> str:
+    return " ".join((value or "").split()).strip()
+
+
+def _powershell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _reminder_marker_path(reminder_id: str) -> Path:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", reminder_id).strip("._") or "reminder"
+    return REMINDER_MARKER_DIR / f"{safe_name}.json"
+
+
+def _write_reminder_marker(reminder_id: str, title: str, body: str, reminder_at: str) -> Path:
+    REMINDER_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+    marker_path = _reminder_marker_path(reminder_id)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "reminder_id": reminder_id,
+                "title": normalize_reminder_text(title),
+                "body": normalize_reminder_text(body),
+                "reminder_at": reminder_at,
+                "armed_at": datetime.now().astimezone().isoformat(),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return marker_path
+
+
+def _delete_reminder_marker(reminder_id: str) -> None:
+    with suppress(FileNotFoundError):
+        _reminder_marker_path(reminder_id).unlink()
+
+
+def arm_detached_windows_reminder(reminder_id: str, title: str, body: str, reminder_at: str) -> dict[str, Any]:
+    marker_path = _write_reminder_marker(reminder_id, title, body, reminder_at)
+    now = datetime.now().astimezone()
+    trigger_at = datetime.fromisoformat(reminder_at)
+    if trigger_at.tzinfo is None:
+        trigger_at = trigger_at.replace(tzinfo=now.tzinfo)
+    delay_seconds = max(0, int((trigger_at - now).total_seconds()))
+
+    expected_at = reminder_at.replace("'", "''")
+    marker_literal = _powershell_single_quote(str(marker_path))
+    popup_title = _powershell_single_quote(normalize_reminder_text(title) or "Akansha reminder")
+    popup_body = _powershell_single_quote(normalize_reminder_text(body) or "You asked Akansha to remind you.")
+    script = f"""
+Start-Sleep -Seconds {delay_seconds}
+try {{
+    if (!(Test-Path -LiteralPath {marker_literal})) {{ exit }}
+    $marker = Get-Content -Raw -LiteralPath {marker_literal} | ConvertFrom-Json
+    if ($marker.reminder_at -ne '{expected_at}') {{ exit }}
+    [System.Media.SystemSounds]::Exclamation.Play()
+    Add-Type -AssemblyName PresentationFramework
+    Add-Type -AssemblyName WindowsBase
+
+    $window = New-Object System.Windows.Window
+    $window.Title = 'Akansha reminder'
+    $window.Width = 460
+    $window.Height = 190
+    $window.Topmost = $true
+    $window.ResizeMode = 'NoResize'
+    $window.WindowStartupLocation = 'Manual'
+    $window.Left = [System.Windows.SystemParameters]::WorkArea.Right - 480
+    $window.Top = [System.Windows.SystemParameters]::WorkArea.Bottom - 240
+    $window.Background = '#101827'
+    $window.Foreground = '#F8FAFC'
+
+    $stack = New-Object System.Windows.Controls.StackPanel
+    $stack.Margin = '20'
+
+    $titleBlock = New-Object System.Windows.Controls.TextBlock
+    $titleBlock.Text = {popup_title}
+    $titleBlock.FontSize = 19
+    $titleBlock.FontWeight = 'Bold'
+    $titleBlock.Margin = '0,0,0,10'
+    $titleBlock.TextWrapping = 'Wrap'
+    $stack.Children.Add($titleBlock) | Out-Null
+
+    $bodyBlock = New-Object System.Windows.Controls.TextBlock
+    $bodyBlock.Text = {popup_body}
+    $bodyBlock.FontSize = 13
+    $bodyBlock.Foreground = '#CBD5E1'
+    $bodyBlock.TextWrapping = 'Wrap'
+    $stack.Children.Add($bodyBlock) | Out-Null
+
+    $button = New-Object System.Windows.Controls.Button
+    $button.Content = 'Dismiss'
+    $button.Margin = '0,16,0,0'
+    $button.Padding = '18,8'
+    $button.HorizontalAlignment = 'Right'
+    $button.Add_Click({{ $window.Close() }})
+    $stack.Children.Add($button) | Out-Null
+
+    $window.Content = $stack
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromSeconds(30)
+    $timer.Add_Tick({{ $timer.Stop(); $window.Close() }})
+    $timer.Start()
+    $window.ShowDialog() | Out-Null
+}} finally {{
+    Remove-Item -LiteralPath {marker_literal} -Force -ErrorAction SilentlyContinue
+}}
+"""
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+    process = subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-Sta", "-ExecutionPolicy", "Bypass", "-Command", script],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+    return {"pid": process.pid, "armed_for": reminder_at, "delay_seconds": delay_seconds}
+
+
+async def planner_reminder_scheduler_loop() -> None:
+    while True:
+        now = datetime.now().astimezone()
+        due_ids: list[str] = []
+
+        for reminder_id, payload in list(planner_reminder_registry.items()):
+            if payload.get("sent"):
+                continue
+
+            try:
+                trigger_at = datetime.fromisoformat(str(payload["reminder_at"]))
+            except Exception:
+                continue
+
+            if trigger_at.tzinfo is None:
+                trigger_at = trigger_at.replace(tzinfo=now.tzinfo)
+
+            if trigger_at <= now:
+                clean_title = normalize_reminder_text(str(payload["title"]))
+                clean_body = normalize_reminder_text(str(payload["body"]))
+                try:
+                    show_windows_notification(clean_title, clean_body)
+                    planner_reminder_history.append({
+                        "reminder_id": reminder_id,
+                        "title": clean_title,
+                        "body": clean_body,
+                        "triggered_at": now.isoformat(),
+                        "status": "sent",
+                    })
+                except Exception as exc:
+                    planner_reminder_history.append({
+                        "reminder_id": reminder_id,
+                        "title": clean_title,
+                        "body": clean_body,
+                        "triggered_at": now.isoformat(),
+                        "status": f"error: {exc}",
+                    })
+                due_ids.append(reminder_id)
+
+        for reminder_id in due_ids:
+            if reminder_id in planner_reminder_registry:
+                planner_reminder_registry[reminder_id]["sent"] = True
+                _delete_reminder_marker(reminder_id)
+
+        await asyncio.sleep(1)
+
+
+@app.on_event("startup")
+async def startup_planner_scheduler() -> None:
+    global planner_scheduler_task
+    if planner_scheduler_task is None or planner_scheduler_task.done():
+        planner_scheduler_task = asyncio.create_task(planner_reminder_scheduler_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown_planner_scheduler() -> None:
+    global planner_scheduler_task
+    if planner_scheduler_task is not None:
+        planner_scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await planner_scheduler_task
+        planner_scheduler_task = None
+
+
 def generate_cloned_voice_audio(text: str, voice_tone: str | None) -> bytes:
     if not cloned_voice_configured():
         raise HTTPException(
@@ -357,15 +667,38 @@ SOCIAL_PLATFORM_META: dict[str, dict[str, str]] = {
     "instagram": {"label": "Instagram", "accent": "#F43F5E"},
     "twitter": {"label": "X / Twitter", "accent": "#60A5FA"},
     "telegram": {"label": "Telegram", "accent": "#38BDF8"},
-    "discord": {"label": "Discord", "accent": "#818CF8"},
+}
+
+SOCIAL_FIELD_DEFINITIONS: dict[str, list[dict[str, Any]]] = {
+    "whatsapp": [
+        {"key": "phone_number_id", "label": "Phone number ID", "required": True, "secret": False},
+        {"key": "access_token", "label": "Cloud API access token", "required": True, "secret": True},
+        {"key": "webhook_verify_token", "label": "Webhook verify token", "required": False, "secret": True, "advanced": True, "auto": True},
+        {"key": "business_account_id", "label": "Business account ID", "required": False, "secret": False, "advanced": True},
+    ],
+    "instagram": [
+        {"key": "page_access_token", "label": "Page access token", "required": True, "secret": True},
+        {"key": "instagram_business_account_id", "label": "Instagram business account ID", "required": True, "secret": False},
+        {"key": "webhook_verify_token", "label": "Webhook verify token", "required": False, "secret": True, "advanced": True, "auto": True},
+        {"key": "app_secret", "label": "App secret", "required": False, "secret": True, "advanced": True},
+    ],
+    "twitter": [
+        {"key": "bearer_token", "label": "Bearer token", "required": True, "secret": True},
+        {"key": "api_key", "label": "API key", "required": False, "secret": True, "advanced": True},
+        {"key": "api_secret", "label": "API secret", "required": False, "secret": True, "advanced": True},
+        {"key": "access_token", "label": "Access token", "required": False, "secret": True, "advanced": True},
+        {"key": "access_token_secret", "label": "Access token secret", "required": False, "secret": True, "advanced": True},
+    ],
+    "telegram": [
+        {"key": "bot_token", "label": "Bot token", "required": True, "secret": True},
+        {"key": "default_chat_id", "label": "Default chat ID", "required": False, "secret": False, "advanced": True},
+        {"key": "webhook_secret", "label": "Webhook secret", "required": False, "secret": True, "advanced": True, "auto": True},
+    ],
 }
 
 SOCIAL_REQUIRED_FIELDS: dict[str, list[str]] = {
-    "whatsapp": ["phone_number_id", "access_token", "webhook_verify_token"],
-    "instagram": ["app_id", "app_secret", "access_token"],
-    "twitter": ["api_key", "api_secret", "bearer_token"],
-    "telegram": ["bot_token", "chat_id"],
-    "discord": ["bot_token", "guild_id", "channel_id"],
+    platform: [field["key"] for field in fields if field.get("required")]
+    for platform, fields in SOCIAL_FIELD_DEFINITIONS.items()
 }
 
 BROWSER_AUTOMATION_PROVIDER = "browser-automation"
@@ -437,6 +770,30 @@ BROWSER_AUTOMATION_ACTIONS: list[dict[str, str]] = [
         "label": "Switch desktop window",
         "permission": "open_close_tabs",
         "description": "Move to the next open desktop app window.",
+    },
+    {
+        "key": "volume_up",
+        "label": "Increase volume",
+        "permission": "open_links",
+        "description": "Raise Windows system volume.",
+    },
+    {
+        "key": "volume_down",
+        "label": "Decrease volume",
+        "permission": "open_links",
+        "description": "Lower Windows system volume.",
+    },
+    {
+        "key": "brightness_up",
+        "label": "Increase brightness",
+        "permission": "open_links",
+        "description": "Raise Windows screen brightness when the display supports WMI brightness control.",
+    },
+    {
+        "key": "brightness_down",
+        "label": "Decrease brightness",
+        "permission": "open_links",
+        "description": "Lower Windows screen brightness when the display supports WMI brightness control.",
     },
 ]
 
@@ -714,6 +1071,50 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
         summary = "Clearing the active draft or field."
         return {"summary": summary, "steps": steps}
 
+    if any(token in lowered for token in ["volume", "sound", "audio"]):
+        amount_match = re.search(r"\b(?:by|to)\s+(\d{1,3})\b", lowered)
+        amount = int(amount_match.group(1)) if amount_match else 5
+        if any(token in lowered for token in ["mute", "silent", "silence"]):
+            steps.append({"action": "volume_mute"})
+            summary = "Toggling system mute."
+            return {"summary": summary, "steps": steps}
+        if any(token in lowered for token in ["increase", "raise", "up", "higher", "louder"]):
+            steps.append({"action": "volume_up", "payload": {"amount": amount}})
+            summary = "Increasing system volume."
+            return {"summary": summary, "steps": steps}
+        if any(token in lowered for token in ["decrease", "reduce", "lower", "down", "quieter"]):
+            steps.append({"action": "volume_down", "payload": {"amount": amount}})
+            summary = "Decreasing system volume."
+            return {"summary": summary, "steps": steps}
+
+    if any(token in lowered for token in ["brightness", "screen light", "display light"]):
+        amount_match = re.search(r"\b(?:by|to|at)\s+(\d{1,3})\s*%?\b", lowered)
+        amount = int(amount_match.group(1)) if amount_match else 10
+        if any(token in lowered for token in ["set", "make", "to ", "at "]):
+            steps.append({"action": "set_brightness", "payload": {"amount": amount}})
+            summary = f"Setting screen brightness to {amount}%."
+            return {"summary": summary, "steps": steps}
+        if any(token in lowered for token in ["increase", "raise", "up", "higher", "brighter"]):
+            steps.append({"action": "brightness_up", "payload": {"amount": amount}})
+            summary = "Increasing screen brightness."
+            return {"summary": summary, "steps": steps}
+        if any(token in lowered for token in ["decrease", "reduce", "lower", "down", "dim"]):
+            steps.append({"action": "brightness_down", "payload": {"amount": amount}})
+            summary = "Decreasing screen brightness."
+            return {"summary": summary, "steps": steps}
+
+    if "play" in lowered and any(token in lowered for token in ["song", "songs", "music", "movie", "movies"]):
+        query = search_phrase or re.sub(
+            r"\b(open|youtube|play|please|song|songs|music|movie|movies)\b",
+            " ",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        query = " ".join(query.split()).strip(" .") or normalized
+        steps.append({"action": "open_youtube_song", "target": query})
+        summary = f"Opening YouTube and searching for {query}."
+        return {"summary": summary, "steps": steps}
+
     if normalized_domain == "codechef.com" and any(token in lowered for token in ["practice", "problem section", "practice problem"]):
         java_path = "https://www.codechef.com/practice/java" if "java" in lowered else "https://www.codechef.com/practice"
         steps.append({"action": "open_url", "target": java_path})
@@ -915,6 +1316,278 @@ def get_social_connection_status(connection: IntegrationConnection) -> tuple[boo
     return configured, metadata
 
 
+def social_public_base_url() -> str:
+    return os.getenv("AKANSHA_PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+
+
+def mask_secret(value: str | None) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _local_secret_key() -> bytes:
+    seed = os.getenv("AKANSHA_SECRET_KEY") or os.getenv("SECRET_KEY") or "akansha-local-dev-secret"
+    return hashlib.sha256(seed.encode("utf-8")).digest()
+
+
+def _local_keystream(key: bytes, nonce: bytes, length: int) -> bytes:
+    chunks: list[bytes] = []
+    counter = 0
+    while sum(len(chunk) for chunk in chunks) < length:
+        chunks.append(hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
+        counter += 1
+    return b"".join(chunks)[:length]
+
+
+def _local_encrypt(raw: bytes) -> dict[str, str]:
+    key = _local_secret_key()
+    nonce = secrets.token_bytes(16)
+    stream = _local_keystream(key, nonce, len(raw))
+    ciphertext = bytes(item ^ stream[index] for index, item in enumerate(raw))
+    tag = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
+    return {
+        "scheme": "local-hmac-stream-v1",
+        "payload": base64.b64encode(nonce + tag + ciphertext).decode("ascii"),
+    }
+
+
+def _local_decrypt(payload: str) -> bytes:
+    key = _local_secret_key()
+    packed = base64.b64decode(payload.encode("ascii"))
+    nonce, tag, ciphertext = packed[:16], packed[16:48], packed[48:]
+    expected = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(tag, expected):
+        raise ValueError("Social credential signature did not match.")
+    stream = _local_keystream(key, nonce, len(ciphertext))
+    return bytes(item ^ stream[index] for index, item in enumerate(ciphertext))
+
+
+def _dpapi_encrypt(raw: bytes) -> dict[str, str]:
+    if os.name != "nt":
+        raise RuntimeError("DPAPI is only available on Windows.")
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    buffer = ctypes.create_string_buffer(raw)
+    in_blob = DataBlob(len(raw), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    out_blob = DataBlob()
+    if not crypt32.CryptProtectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+        raise ctypes.WinError()
+    try:
+        encrypted = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        kernel32.LocalFree(out_blob.pbData)
+    return {"scheme": "windows-dpapi", "payload": base64.b64encode(encrypted).decode("ascii")}
+
+
+def _dpapi_decrypt(payload: str) -> bytes:
+    if os.name != "nt":
+        raise RuntimeError("DPAPI is only available on Windows.")
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+    encrypted = base64.b64decode(payload.encode("ascii"))
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    buffer = ctypes.create_string_buffer(encrypted)
+    in_blob = DataBlob(len(encrypted), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    out_blob = DataBlob()
+    if not crypt32.CryptUnprotectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        kernel32.LocalFree(out_blob.pbData)
+
+
+def encrypt_social_config(config: dict[str, str]) -> dict[str, str]:
+    raw = json.dumps(config, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    if os.name == "nt":
+        try:
+            return _dpapi_encrypt(raw)
+        except Exception:
+            pass
+    return _local_encrypt(raw)
+
+
+def decrypt_social_config(metadata: dict[str, Any]) -> dict[str, str]:
+    encrypted = metadata.get("config_encrypted")
+    if isinstance(encrypted, dict) and isinstance(encrypted.get("payload"), str):
+        try:
+            scheme = encrypted.get("scheme")
+            if scheme == "windows-dpapi":
+                raw = _dpapi_decrypt(encrypted["payload"])
+            else:
+                raw = _local_decrypt(encrypted["payload"])
+            decoded = json.loads(raw.decode("utf-8"))
+            if isinstance(decoded, dict):
+                return {str(key): str(value) for key, value in decoded.items()}
+        except Exception:
+            return {}
+
+    legacy_config = metadata.get("config")
+    if isinstance(legacy_config, dict):
+        return {str(key): str(value) for key, value in legacy_config.items()}
+    return {}
+
+
+def ensure_social_auto_secrets(platform: str, config: dict[str, str]) -> dict[str, str]:
+    updated = dict(config)
+    if platform in {"whatsapp", "instagram"} and not updated.get("webhook_verify_token"):
+        updated["webhook_verify_token"] = secrets.token_urlsafe(24)
+    if platform == "telegram" and not updated.get("webhook_secret"):
+        updated["webhook_secret"] = secrets.token_urlsafe(24)
+    return updated
+
+
+def clean_social_config(platform: str, config: dict[str, str]) -> dict[str, str]:
+    allowed = {field["key"] for field in SOCIAL_FIELD_DEFINITIONS.get(platform, [])}
+    cleaned: dict[str, str] = {}
+    for key, value in config.items():
+        if key in allowed and isinstance(value, str) and value.strip():
+            cleaned[key] = value.strip()
+    return cleaned
+
+
+def social_config_preview(platform: str, config: dict[str, str]) -> dict[str, str]:
+    secret_fields = {
+        field["key"]
+        for field in SOCIAL_FIELD_DEFINITIONS.get(platform, [])
+        if field.get("secret")
+    }
+    return {
+        key: mask_secret(value) if key in secret_fields else value
+        for key, value in config.items()
+    }
+
+
+def serialize_social_platform(platform: str, connection: IntegrationConnection) -> dict[str, Any]:
+    meta = SOCIAL_PLATFORM_META[platform]
+    configured, metadata = get_social_connection_status(connection)
+    config = decrypt_social_config(metadata)
+    required_fields = SOCIAL_REQUIRED_FIELDS.get(platform, [])
+    configured_fields = sorted(config.keys())
+    missing_fields = [field for field in required_fields if not config.get(field)]
+    verified = bool(metadata.get("verified"))
+    return {
+        "key": platform,
+        "label": meta["label"],
+        "connected": configured,
+        "verified": verified,
+        "accent": meta["accent"],
+        "setup_required": bool(missing_fields),
+        "required_fields": required_fields,
+        "missing_fields": missing_fields,
+        "configured_fields": configured_fields,
+        "fields": SOCIAL_FIELD_DEFINITIONS.get(platform, []),
+        "config_preview": social_config_preview(platform, config),
+        "webhook_url": f"{social_public_base_url()}/api/social/webhook/{platform}",
+        "last_verified": metadata.get("last_verified"),
+        "verification_status": metadata.get("verification_status") or ("verified" if verified else "not_tested"),
+        "verification_detail": metadata.get("verification_detail"),
+        "account_label": connection.account_email if configured else None,
+    }
+
+
+def verify_social_config(platform: str, config: dict[str, str]) -> dict[str, Any]:
+    if platform == "telegram":
+        bot_token = config.get("bot_token", "")
+        request = Request(f"https://api.telegram.org/bot{bot_token}/getMe")
+        with urlopen(request, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        if not data.get("ok"):
+            raise HTTPException(status_code=400, detail="Telegram rejected this bot token.")
+        result = data.get("result", {})
+        username = result.get("username") or result.get("first_name") or "Telegram bot"
+        return {
+            "verified": True,
+            "verification_status": "verified",
+            "account_label": f"@{username}" if not str(username).startswith("@") else username,
+            "detail": "Telegram bot token verified with getMe.",
+        }
+
+    if platform == "whatsapp":
+        token = config.get("access_token")
+        phone_number_id = config.get("phone_number_id")
+        if token and phone_number_id:
+            request = Request(
+                f"https://graph.facebook.com/v19.0/{phone_number_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urlopen(request, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            return {
+                "verified": True,
+                "verification_status": "verified",
+                "account_label": data.get("display_phone_number") or data.get("verified_name") or "WhatsApp Cloud API",
+                "detail": "WhatsApp phone number ID verified with Meta Graph API.",
+            }
+
+    if platform == "instagram":
+        token = config.get("page_access_token")
+        account_id = config.get("instagram_business_account_id")
+        if token and account_id:
+            request = Request(
+                f"https://graph.facebook.com/v19.0/{account_id}?fields=username",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urlopen(request, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            username = data.get("username") or account_id
+            return {
+                "verified": True,
+                "verification_status": "verified",
+                "account_label": f"@{username}" if not str(username).startswith("@") else username,
+                "detail": "Instagram business account verified with Meta Graph API.",
+            }
+
+    if platform == "twitter":
+        token = config.get("bearer_token")
+        if token:
+            request = Request(
+                "https://api.x.com/2/users/by/username/xdevelopers",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urlopen(request, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            user = data.get("data", {})
+            return {
+                "verified": True,
+                "verification_status": "verified",
+                "account_label": "X API bearer token",
+                "detail": f"X bearer token verified with a public user lookup ({user.get('username', 'xdevelopers')}).",
+            }
+
+    return {
+        "verified": False,
+        "verification_status": "configured_unverified",
+        "account_label": f"{platform}@configured.local",
+        "detail": "Credentials were saved. Live verification was skipped for this platform.",
+    }
+
+
+def store_social_message(db: Session, platform: str, sender: str, content: str, intent: str = "incoming") -> None:
+    if not content.strip():
+        return
+    db.add(
+        InboxMessage(
+            platform=platform,
+            sender=sender or "Unknown",
+            content=content.strip(),
+            intent=intent,
+            sentiment="neutral",
+            is_read=False,
+        )
+    )
+
+
 def get_connection_metadata(connection: IntegrationConnection) -> dict[str, Any]:
     if not connection.metadata_json:
         return {}
@@ -1070,6 +1743,33 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks, db:
         raise HTTPException(status_code=500, detail=f"AI Engine Error: {str(e)}")
 
 
+@app.post("/api/chat/message")
+def save_chat_message(req: ChatMessageSaveRequest, db: Session = Depends(get_db)):
+    if req.role not in {"user", "assistant"}:
+        raise HTTPException(status_code=400, detail="Role must be 'user' or 'assistant'.")
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="Message content is empty.")
+
+    message = ChatMessage(
+        role=req.role,
+        content=req.content.strip(),
+        session_id=req.session_id or "default",
+    )
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+
+    return {
+        "message": {
+            "id": message.id,
+            "session_id": message.session_id,
+            "role": message.role,
+            "content": message.content,
+            "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+        }
+    }
+
+
 @app.post("/api/chat/stream")
 async def chat_stream_endpoint(
     req: ChatRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
@@ -1128,6 +1828,33 @@ def get_chat_history(session_id: str | None = None, db: Session = Depends(get_db
         ]
     }
 
+
+@app.delete("/api/chat/session/{session_id}")
+def delete_chat_session(session_id: str, db: Session = Depends(get_db)):
+    normalized_session_id = (session_id or "").strip()
+    if not normalized_session_id:
+        raise HTTPException(status_code=400, detail="Session id is required.")
+
+    deleted_count = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.session_id == normalized_session_id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return {
+        "success": True,
+        "session_id": normalized_session_id,
+        "deleted": deleted_count,
+    }
+
+
+@app.delete("/api/chat/history")
+def clear_chat_history(db: Session = Depends(get_db)):
+    deleted_count = db.query(ChatMessage).delete(synchronize_session=False)
+    db.commit()
+    return {"success": True, "deleted": deleted_count}
+
+
 @app.get("/api/memories")
 def get_memories(db: Session = Depends(get_db)):
     memories = db.query(Memory).order_by(Memory.importance.desc()).all()
@@ -1158,19 +1885,7 @@ def get_social_inbox(db: Session = Depends(get_db)):
     platforms = []
     for key, meta in SOCIAL_PLATFORM_META.items():
         connection = get_or_create_connection(db, key)
-        configured, metadata = get_social_connection_status(connection)
-        platforms.append(
-            {
-                "key": key,
-                "label": meta["label"],
-                "connected": configured,
-                "accent": meta["accent"],
-                "setup_required": not configured,
-                "required_fields": SOCIAL_REQUIRED_FIELDS.get(key, []),
-                "configured_fields": metadata.get("configured_fields", []),
-                "last_verified": metadata.get("last_verified"),
-            }
-        )
+        platforms.append(serialize_social_platform(key, connection))
 
     return {
         "platforms": platforms,
@@ -1196,10 +1911,37 @@ def connect_social_platform(platform: str, db: Session = Depends(get_db)):
     if platform not in SOCIAL_PLATFORM_META:
         raise HTTPException(status_code=404, detail="Unsupported social platform")
 
-    raise HTTPException(
-        status_code=400,
-        detail="This platform is not connected yet. Add the required API credentials in setup first.",
+    connection = get_or_create_connection(db, platform)
+    configured, metadata = get_social_connection_status(connection)
+    if not configured:
+        raise HTTPException(
+            status_code=400,
+            detail="This platform is not configured yet. Add the required API credentials first.",
+        )
+
+    config = decrypt_social_config(metadata)
+    try:
+        verification = verify_social_config(platform, config)
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore") or str(exc)
+        raise HTTPException(status_code=400, detail=f"{platform} verification failed: {detail}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{platform} verification failed: {exc}") from exc
+
+    metadata.update(
+        {
+            "verified": verification["verified"],
+            "verification_status": verification["verification_status"],
+            "verification_detail": verification["detail"],
+            "last_verified": datetime.now(timezone.utc).isoformat(),
+        }
     )
+    connection.account_email = verification.get("account_label")
+    connection.metadata_json = json.dumps(metadata)
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    return {"success": True, "platform": platform, "status": serialize_social_platform(platform, connection)}
 
 
 @app.post("/api/social/setup/{platform}")
@@ -1208,31 +1950,67 @@ def setup_social_platform(platform: str, req: SocialSetupRequest, db: Session = 
         raise HTTPException(status_code=404, detail="Unsupported social platform")
 
     required_fields = SOCIAL_REQUIRED_FIELDS.get(platform, [])
-    missing = [field for field in required_fields if not req.config.get(field, "").strip()]
+    config = ensure_social_auto_secrets(platform, clean_social_config(platform, req.config))
+    missing = [field for field in required_fields if not config.get(field, "").strip()]
     if missing:
         raise HTTPException(
             status_code=400,
             detail=f"Missing required fields: {', '.join(missing)}",
         )
 
+    verification: dict[str, Any] = {
+        "verified": False,
+        "verification_status": "saved_not_tested",
+        "account_label": f"{platform}@configured.local",
+        "detail": "Credentials saved. Use Test connection to verify them live.",
+    }
+    if req.test_connection:
+        try:
+            verification = verify_social_config(platform, config)
+        except HTTPError as exc:
+            verification = {
+                "verified": False,
+                "verification_status": "verification_failed",
+                "account_label": f"{platform}@configured.local",
+                "detail": exc.read().decode("utf-8", errors="ignore") or str(exc),
+            }
+        except Exception as exc:
+            verification = {
+                "verified": False,
+                "verification_status": "verification_failed",
+                "account_label": f"{platform}@configured.local",
+                "detail": str(exc),
+            }
+
     connection = get_or_create_connection(db, platform)
     connection.is_connected = True
-    connection.account_email = f"{platform}@configured.local"
+    connection.account_email = verification.get("account_label")
+    connection.access_token = None
     connection.metadata_json = json.dumps(
         {
             "mode": "manual-api-config",
             "configured": True,
-            "configured_fields": sorted(req.config.keys()),
-            "last_verified": datetime.utcnow().isoformat(),
+            "configured_fields": sorted(config.keys()),
+            "config_encrypted": encrypt_social_config(config),
+            "config": None,
+            "security": "tokens-encrypted-at-rest",
+            "verified": verification["verified"],
+            "verification_status": verification["verification_status"],
+            "verification_detail": verification["detail"],
+            "last_verified": datetime.now(timezone.utc).isoformat() if verification["verified"] else None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     )
     db.add(connection)
     db.commit()
+    db.refresh(connection)
 
     return {
         "success": True,
         "platform": platform,
-        "configured_fields": sorted(req.config.keys()),
+        "configured_fields": sorted(config.keys()),
+        "status": serialize_social_platform(platform, connection),
+        "verification_detail": verification["detail"],
     }
 
 
@@ -1243,6 +2021,9 @@ def disconnect_social_platform(platform: str, db: Session = Depends(get_db)):
 
     connection = get_or_create_connection(db, platform)
     connection.is_connected = False
+    connection.access_token = None
+    connection.refresh_token = None
+    connection.scope = None
     connection.account_email = None
     connection.metadata_json = json.dumps(
         {
@@ -1258,6 +2039,69 @@ def disconnect_social_platform(platform: str, db: Session = Depends(get_db)):
     return {"success": True, "platform": platform}
 
 
+@app.get("/api/social/webhook/{platform}")
+def verify_social_webhook(platform: str, request: FastAPIRequest, db: Session = Depends(get_db)):
+    if platform not in SOCIAL_PLATFORM_META:
+        raise HTTPException(status_code=404, detail="Unsupported social platform")
+
+    connection = get_or_create_connection(db, platform)
+    _, metadata = get_social_connection_status(connection)
+    config = decrypt_social_config(metadata)
+
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+    expected = config.get("webhook_verify_token") or config.get("webhook_secret")
+
+    if mode == "subscribe" and challenge and expected and token == expected:
+        return Response(content=challenge, media_type="text/plain")
+
+    raise HTTPException(status_code=403, detail="Webhook verification token did not match.")
+
+
+@app.post("/api/social/webhook/{platform}")
+async def receive_social_webhook(platform: str, request: FastAPIRequest, db: Session = Depends(get_db)):
+    if platform not in SOCIAL_PLATFORM_META:
+        raise HTTPException(status_code=404, detail="Unsupported social platform")
+
+    payload = await request.json()
+    stored = 0
+
+    if platform == "telegram":
+        message = payload.get("message") or payload.get("edited_message") or {}
+        chat = message.get("chat") or {}
+        sender_data = message.get("from") or {}
+        sender = str(chat.get("id") or sender_data.get("username") or sender_data.get("first_name") or "Telegram")
+        content = message.get("text") or message.get("caption") or ""
+        if content:
+            store_social_message(db, platform, sender, content)
+            stored += 1
+
+    elif platform in {"whatsapp", "instagram"}:
+        for entry in payload.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                for message in value.get("messages", []):
+                    sender = message.get("from") or message.get("sender", {}).get("id") or platform
+                    text = (message.get("text") or {}).get("body") or message.get("message", {}).get("text") or ""
+                    if text:
+                        store_social_message(db, platform, str(sender), text)
+                        stored += 1
+            for event in entry.get("messaging", []):
+                sender = str((event.get("sender") or {}).get("id") or platform)
+                text = (event.get("message") or {}).get("text") or ""
+                if text:
+                    store_social_message(db, platform, sender, text)
+                    stored += 1
+
+    else:
+        store_social_message(db, platform, platform, json.dumps(payload)[:1200], intent="webhook")
+        stored += 1
+
+    db.commit()
+    return {"success": True, "platform": platform, "stored": stored}
+
+
 @app.post("/api/social/send")
 def send_social_reply(req: SocialReplyRequest, db: Session = Depends(get_db)):
     if req.platform not in SOCIAL_PLATFORM_META:
@@ -1268,6 +2112,77 @@ def send_social_reply(req: SocialReplyRequest, db: Session = Depends(get_db)):
     connection = get_or_create_connection(db, req.platform)
     if not connection.is_connected:
         raise HTTPException(status_code=400, detail="Connect the platform before sending replies.")
+    metadata = get_connection_metadata(connection)
+    config = decrypt_social_config(metadata)
+    delivery_status = "approved-and-queued"
+    delivery_detail = "Reply is saved locally. Add live recipient IDs/tokens to send through the platform API."
+
+    try:
+        if req.platform == "telegram":
+            chat_id = config.get("default_chat_id") or (req.sender if str(req.sender).lstrip("-").isdigit() else "")
+            bot_token = config.get("bot_token")
+            if bot_token and chat_id:
+                telegram_request = Request(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    data=json.dumps({"chat_id": chat_id, "text": req.reply}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(telegram_request, timeout=15) as response:
+                    telegram_data = json.loads(response.read().decode("utf-8"))
+                delivery_status = "sent"
+                delivery_detail = "Telegram sendMessage accepted the reply." if telegram_data.get("ok") else "Telegram returned a non-ok response."
+
+        elif req.platform == "whatsapp":
+            recipient = re.sub(r"\D", "", req.sender)
+            phone_number_id = config.get("phone_number_id")
+            token = config.get("access_token")
+            if token and phone_number_id and recipient:
+                whatsapp_request = Request(
+                    f"https://graph.facebook.com/v19.0/{phone_number_id}/messages",
+                    data=json.dumps(
+                        {
+                            "messaging_product": "whatsapp",
+                            "to": recipient,
+                            "type": "text",
+                            "text": {"body": req.reply},
+                        }
+                    ).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                with urlopen(whatsapp_request, timeout=15):
+                    pass
+                delivery_status = "sent"
+                delivery_detail = "WhatsApp Cloud API accepted the reply."
+
+        elif req.platform == "instagram":
+            token = config.get("page_access_token")
+            if token and req.sender and req.sender.isdigit():
+                instagram_request = Request(
+                    f"https://graph.facebook.com/v19.0/me/messages?access_token={token}",
+                    data=json.dumps(
+                        {
+                            "recipient": {"id": req.sender},
+                            "message": {"text": req.reply},
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(instagram_request, timeout=15):
+                    pass
+                delivery_status = "sent"
+                delivery_detail = "Instagram Messaging API accepted the reply."
+    except HTTPError as exc:
+        delivery_status = "send_failed"
+        delivery_detail = exc.read().decode("utf-8", errors="ignore") or str(exc)
+    except Exception as exc:
+        delivery_status = "send_failed"
+        delivery_detail = str(exc)
 
     if req.message_id:
         original = db.query(InboxMessage).filter(InboxMessage.id == req.message_id).first()
@@ -1289,7 +2204,8 @@ def send_social_reply(req: SocialReplyRequest, db: Session = Depends(get_db)):
 
     return {
         "success": True,
-        "status": "approved-and-queued",
+        "status": delivery_status,
+        "detail": delivery_detail,
         "platform": req.platform,
         "sender": req.sender,
         "reply": req.reply,
@@ -1337,6 +2253,72 @@ def get_voice_status():
         "model_id": "te-IN-ShrutiNeural / en-IN-NeerjaNeural / hi-IN-SwaraNeural",
         "voice_id_present": True,
         "supported_language_modes": ["english", "telugu", "mixed", "hindi"],
+    }
+
+
+@app.post("/api/system/notify")
+def system_notify(request: DesktopNotificationRequest):
+    title = request.title.strip()
+    body = request.body.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Notification title is required.")
+
+    try:
+        show_windows_notification(title, body or "Akansha reminder")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to show desktop notification: {exc}") from exc
+
+    return {"success": True, "message": "Desktop notification sent."}
+
+
+@app.post("/api/planner/reminders/sync")
+def sync_planner_reminders(request: PlannerReminderSyncRequest):
+    incoming_ids = {item.reminder_id for item in request.reminders}
+
+    for reminder_id in list(planner_reminder_registry.keys()):
+        if reminder_id not in incoming_ids:
+            planner_reminder_registry.pop(reminder_id, None)
+            _delete_reminder_marker(reminder_id)
+
+    for item in request.reminders:
+        existing = planner_reminder_registry.get(item.reminder_id, {})
+        title = normalize_reminder_text(item.title) or "Akansha reminder"
+        body = normalize_reminder_text(item.body) or "You asked Akansha to remind you."
+        should_preserve_sent = bool(existing.get("sent", False)) and existing.get("reminder_at") == item.reminder_at
+        armed_payload: dict[str, Any] = {}
+
+        if not should_preserve_sent and existing.get("armed_for") != item.reminder_at:
+            try:
+                armed_payload = arm_detached_windows_reminder(item.reminder_id, title, body, item.reminder_at)
+            except Exception as exc:
+                planner_reminder_history.append({
+                    "reminder_id": item.reminder_id,
+                    "title": title,
+                    "body": body,
+                    "triggered_at": datetime.now().astimezone().isoformat(),
+                    "status": f"arm_error: {exc}",
+                })
+
+        planner_reminder_registry[item.reminder_id] = {
+            "title": title,
+            "body": body,
+            "reminder_at": item.reminder_at,
+            "sent": should_preserve_sent,
+            "armed_for": armed_payload.get("armed_for", existing.get("armed_for")),
+            "armed_pid": armed_payload.get("pid", existing.get("armed_pid")),
+            "last_synced_at": datetime.now().astimezone().isoformat(),
+        }
+
+    return {"success": True, "count": len(planner_reminder_registry)}
+
+
+@app.get("/api/planner/reminders/status")
+def planner_reminders_status():
+    return {
+        "active_count": len(planner_reminder_registry),
+        "active": planner_reminder_registry,
+        "history": planner_reminder_history[-20:],
+        "scheduler_running": planner_scheduler_task is not None and not planner_scheduler_task.done(),
     }
 
 

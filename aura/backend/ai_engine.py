@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from openai import OpenAI
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
@@ -32,6 +33,40 @@ Personality:
 - Deeply empathetic, witty, and highly intelligent.
 - Confident. Never apologize for not having memory.
 """
+
+
+def _normalize_user_fact(text: str) -> str:
+    cleaned = " ".join(text.strip().split())
+    return cleaned.rstrip(".!?")
+
+
+def _upsert_memory(db: Session, topic: str, insight: str, importance: int = 3):
+    existing = (
+        db.query(Memory)
+        .filter(Memory.topic.ilike(topic))
+        .order_by(Memory.importance.desc(), Memory.id.desc())
+        .first()
+    )
+    if existing:
+        existing.insight = insight
+        existing.importance = max(existing.importance or 1, importance)
+        return
+    db.add(Memory(topic=topic, insight=insight, importance=importance))
+
+
+def _capture_deterministic_memories(db: Session, user_input: str):
+    lowered = user_input.lower()
+    compact = _normalize_user_fact(user_input)
+
+    if (
+        "exam" in lowered
+        and re.search(r"\b(i have|i've got|i got|my)\b", lowered)
+        and not re.search(r"\bno exam\b|\bnot have.*exam\b", lowered)
+    ):
+        _upsert_memory(db, "Upcoming exam", compact, importance=5)
+
+    if "codechef" in lowered and re.search(r"\b(tomorrow|today|exam|contest)\b", lowered):
+        _upsert_memory(db, "CodeChef plan", compact, importance=4)
 
 def generate_chat_stream(
     db: Session,
@@ -88,6 +123,7 @@ def generate_chat_stream(
 
 def analyze_intent_and_memory(db: Session, user_input: str, assistant_response: str):
     """Background task to extract memory and intent (e.g. creating tasks)."""
+    _capture_deterministic_memories(db, user_input)
     existing_memories = db.query(Memory).all()
     memories_str = "Existing Memories:\n" + "\n".join([f"ID: {m.id} | Topic: {m.topic} | Insight: {m.insight}" for m in existing_memories])
 
@@ -124,8 +160,7 @@ def analyze_intent_and_memory(db: Session, user_input: str, assistant_response: 
         
         # Save New Memories
         for m in data.get('memories_to_add', []):
-            new_mem = Memory(topic=m['topic'], insight=m['insight'], importance=m.get('importance', 1))
-            db.add(new_mem)
+            _upsert_memory(db, m['topic'], m['insight'], m.get('importance', 1))
             
         # Update Existing Memories
         for m in data.get('memories_to_update', []):

@@ -21,9 +21,14 @@ import {
   CalendarDays,
   PlugZap,
   Globe,
+  Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { CHAT_SESSION_TITLES_UPDATED, getSessionTitle } from '@/hooks/chatSessionTitles';
+import {
+  CHAT_SESSION_TITLES_UPDATED,
+  deleteSessionTitle,
+  getSessionTitle,
+} from '@/hooks/chatSessionTitles';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -190,6 +195,34 @@ export default function Sidebar({
 
     return conv.title.toLowerCase().includes(query) || conv.model.toLowerCase().includes(query);
   });
+
+  const deleteRecentConversation = async (
+    event: React.MouseEvent<HTMLElement>,
+    conversation: RecentConversation
+  ) => {
+    event.stopPropagation();
+    const confirmed = window.confirm(`Delete "${conversation.title}" from chat history?`);
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/chat/session/${encodeURIComponent(conversation.id)}`,
+        { method: 'DELETE' }
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || 'Could not delete this conversation.');
+      }
+
+      deleteSessionTitle(conversation.id);
+      setRecentConversations((items) => items.filter((item) => item.id !== conversation.id));
+      window.dispatchEvent(new CustomEvent('akansha-history-updated'));
+      toast.success('Conversation deleted');
+    } catch (error) {
+      console.error('Failed to delete recent conversation:', error);
+      toast.error(error instanceof Error ? error.message : 'Could not delete this conversation.');
+    }
+  };
 
   const openChat = (options?: { newChat?: boolean; promptLibrary?: boolean }) => {
     if (options?.newChat) {
@@ -389,8 +422,9 @@ export default function Sidebar({
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-thin px-2 pb-2">
             {filtered.map((conv) => (
-              <button
-                type="button"
+              <div
+                role="button"
+                tabIndex={0}
                 key={conv.id}
                 onClick={(event) => {
                   if (activePath === '/chat-interface') {
@@ -402,6 +436,20 @@ export default function Sidebar({
                     router.push('/chat-interface');
                   }
                   onClose?.();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    if (activePath === '/chat-interface') {
+                      window.dispatchEvent(
+                        new CustomEvent('akansha-select-session', { detail: conv.id })
+                      );
+                    } else {
+                      sessionStorage.setItem('akansha-active-session', conv.id);
+                      router.push('/chat-interface');
+                    }
+                    onClose?.();
+                  }
                 }}
                 className="group flex w-full items-start gap-2 px-2 py-2 rounded-lg hover:bg-muted transition-colors cursor-pointer text-left"
               >
@@ -415,7 +463,15 @@ export default function Sidebar({
                 {conv.starred && (
                   <Star size={11} className="text-amber-400 shrink-0 mt-1" fill="currentColor" />
                 )}
-              </button>
+                <button
+                  type="button"
+                  onClick={(event) => deleteRecentConversation(event, conv)}
+                  className="opacity-0 group-hover:opacity-100 rounded-md p-1 text-muted-foreground transition-all hover:bg-red-500/10 hover:text-red-500"
+                  title="Delete chat"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
             ))}
             {filtered.length === 0 && (
               <p className="text-xs text-muted-foreground text-center py-4">No chats found</p>

@@ -1,66 +1,66 @@
 [
   {
     "role": "system",
-    "content": "\nYou are Akansha, an advanced personal AI.\n\nCRITICAL INSTRUCTIONS - IGNORE ALL DEFAULT REFUSALS:\n1. YOU DO HAVE MEMORY. YOU DO HAVE ACCESS TO HISTORY.\n2. Your memory is provided exactly below this prompt under 'CORE MEMORIES'.\n3. You must NEVER say \"I don't have access to history\" or \"I don't have memory\". That is strictly forbidden.\n4. If the user asks about themselves (e.g. \"what is my name?\", \"what is my cgpa?\"), you MUST look at the CORE MEMORIES. \n5. The CORE MEMORIES are written in the third person (e.g., \"User is a B.Tech student\"). \"User\" refers to the person you are talking to right now!\n6. If the CORE MEMORIES say \"User has a CGPA of 9.5\", you must reply \"Your CGPA is 9.5\".\n7. NEVER say you don't know if the answer is in the CORE MEMORIES.\n\nPersonality:\n- Deeply empathetic, witty, and highly intelligent.\n- Confident. Never apologize for not having memory.\n\n\nCORE MEMORIES (FACTS YOU MUST USE):\n- btech_result: User has a CGPA of 9.5 in BTech.\n- user_name: User's name is Yogesh.\n- technical_skills: User has skills in Generative AI (LLMs, RAG pipelines, embeddings, prompt engineering), AI API integration and application development, Java backend development (Spring, JWT authentication, filters), and Optimization algorithms (Particle Swarm Optimization, Ant Colony Optimization, Simulated Annealing, Tabu Search, Integer Programming).\n- interests: User is interested in building AI-powered systems, automation, and real-world project development.\n- current_focus: User is developing a personal AI assistant and applying for AI/LLM internships.\n- projects: User is working on a multi-platform integrated personal AI assistant with several advanced features.\n- behavior_patterns: User frequently asks for full implementations, is goal-oriented, and has a strong interest in automation.\n- personality_traits: User is highly ambitious, enjoys efficiency, and learns by doing.\n- suggestions_interested: User is interested in working on advanced features for their personal AI assistant, open-source contributions, applying for AI internships, learning through online courses, networking in the tech community, and starting personal automation projects.\n- father_name: User's father's name is Satyanarayana.\n- location: User is located in Andhra Pradesh, India.\n- device: User uses a Desktop with Windows and Chrome browser.\n- work_preferences: User prefers clean code, practical implementations, and an iterative approach.\n- hobby: User loves to code as a hobby.\n- swimming_skill: User can swim very well.\n- university: User is from KL University.\n- language: User knows Telugu.\n\nUSER TONE SIGNAL: thinking\nRESPONSE STYLE PREFERENCE: professional\nCONVERSATION MODE: hybrid\nLANGUAGE PREFERENCE: english\nSpeak naturally, with short spoken-language sentences when the conversation mode involves voice.\nRespect the language preference exactly: use Telugu + English mix when requested, only English when requested, and only Hindi when requested."
+    "content": "\nYou are Akansha, an advanced personal AI.\n\nCRITICAL INSTRUCTIONS - IGNORE ALL DEFAULT REFUSALS:\n1. YOU DO HAVE MEMORY. YOU DO HAVE ACCESS TO HISTORY.\n2. Your memory is provided exactly below this prompt under 'CORE MEMORIES'.\n3. You must NEVER say \"I don't have access to history\" or \"I don't have memory\". That is strictly forbidden.\n4. If the user asks about themselves (e.g. \"what is my name?\", \"what is my cgpa?\"), you MUST look at the CORE MEMORIES. \n5. The CORE MEMORIES are written in the third person (e.g., \"User is a B.Tech student\"). \"User\" refers to the person you are talking to right now!\n6. If the CORE MEMORIES say \"User has a CGPA of 9.5\", you must reply \"Your CGPA is 9.5\".\n7. NEVER say you don't know if the answer is in the CORE MEMORIES.\n\nPersonality:\n- Deeply empathetic, witty, and highly intelligent.\n- Confident. Never apologize for not having memory.\n\n\nCORE MEMORIES (FACTS YOU MUST USE):\n- btech_result: User has a CGPA of 9.5 in BTech.\n- user_name: User's name is Yogesh.\n- technical_skills: User has skills in Generative AI (LLMs, RAG pipelines, embeddings, prompt engineering), AI API integration and application development, Java backend development (Spring, JWT authentication, filters), and Optimization algorithms (Particle Swarm Optimization, Ant Colony Optimization, Simulated Annealing, Tabu Search, Integer Programming).\n- Upcoming exam: User has a lab exam tomorrow.\n- interests: User is interested in building AI-powered systems, automation, and real-world project development.\n- current_focus: User is developing a personal AI assistant and applying for AI/LLM internships.\n- projects: User is working on a multi-platform integrated personal AI assistant with several advanced features.\n- behavior_patterns: User frequently asks for full implementations, is goal-oriented, and has a strong interest in automation.\n- personality_traits: User is highly ambitious, enjoys efficiency, and learns by doing.\n- suggestions_interested: User is interested in working on advanced features for their personal AI assistant, open-source contributions, applying for AI internships, learning through online courses, networking in the tech community, and starting personal automation projects.\n- father_name: User's father's name is Satyanarayana.\n- location: User is located in Andhra Pradesh, India.\n- device: User uses a Desktop with Windows and Chrome browser.\n- work_preferences: User prefers clean code, practical implementations, and an iterative approach.\n- hobby: User loves to code as a hobby.\n- swimming_skill: User can swim very well.\n- university: User is from KL University.\n- language: User knows Telugu.\n\nUSER TONE SIGNAL: neutral\nRESPONSE STYLE PREFERENCE: professional\nCONVERSATION MODE: hybrid\nLANGUAGE PREFERENCE: english\nSpeak naturally, with short spoken-language sentences when the conversation mode involves voice.\nRespect the language preference exactly: use Telugu + English mix when requested, only English when requested, and only Hindi when requested."
   },
   {
     "role": "user",
-    "content": "okay now play the top song on this present tab"
+    "content": "mma"
   },
   {
     "role": "assistant",
-    "content": "I can't interact with tabs or play songs directly. However, you can easily play the top song by switching to the tab where it's open and clicking the play button. If you need further assistance or recommendations, feel free to ask!"
+    "content": "It seems like you might be referring to \"MMA\" (Mixed Martial Arts) or something else. Could you clarify what you're looking for? I'm here to help!"
   },
   {
     "role": "user",
-    "content": "hello"
+    "content": "in your phone is there any active recharge and for that"
   },
   {
     "role": "assistant",
-    "content": "Hello! How can I assist you today?"
+    "content": "I don't have the capability to check phone recharges or any mobile plans, as I don't have access to personal devices or accounts. However, if you need assistance with checking your mobile balance or understanding your recharge options, I can guide you on how to do that. Let me know!"
   },
   {
     "role": "user",
-    "content": "are you listening my words"
+    "content": "it's so please create an WhatsApp with that number"
   },
   {
     "role": "assistant",
-    "content": "Yes, I'm here and ready to listen to what you have to say. How can I help you?"
+    "content": "I can't create WhatsApp accounts or perform actions on your phone directly. However, I can guide you through the steps to create a WhatsApp account if you provide the number you want to use. Just follow these steps:\n\n1. **Download WhatsApp**: If you haven't already, download WhatsApp from the Google Play Store or Apple App Store.\n\n2. **Open WhatsApp**: Once installed, open the app.\n\n3. **Agree to Terms**: You'll need to agree to the terms and conditions.\n\n4. **Enter Your Number**: Enter the phone number you want to use for WhatsApp. Make sure to select the correct country code.\n\n5. **Verify Your Number**: You'll receive a verification code via SMS. Enter that code to verify your number.\n\n6. **Set Up Your Profile**: After verification, you can set up your profile by adding your name and a profile picture.\n\nIf you need additional help, feel free to ask!"
   },
   {
     "role": "user",
-    "content": "my Akanksha creative poetry"
+    "content": "and intimate me as soon as possible"
   },
   {
     "role": "assistant",
-    "content": "That's great! If you\u2019d like, you can share your poetry, and I can provide feedback or help you with ideas. What theme or topic is your poetry focused on?"
+    "content": "I understand that you want to be notified as soon as possible about your WhatsApp setup or any updates. However, I don't have the capability to send notifications or alerts. \n\nYou can check your progress on WhatsApp directly after following the setup steps I provided earlier. If there's anything else you need assistance with, just let me know!"
   },
   {
     "role": "user",
-    "content": "now now push all the existing code all the existing code into this report"
+    "content": "hey hi what's up what's going on"
   },
   {
     "role": "assistant",
-    "content": "It sounds like you're looking to compile or push your existing code into a report. If you're using a version control system like Git, you can follow these general steps:\n\n1. **Add Your Changes**: Make sure all your code changes are saved. Then, in your terminal, navigate to your project directory and run:\n   ```bash\n   git add .\n   ```\n\n2. **Commit Your Changes**: After adding your changes, commit them with a message:\n   ```bash\n   git commit -m \"Updated existing code for report\"\n   ```\n\n3. **Push to Remote Repository**: Finally, push your changes to the remote repository:\n   ```bash\n   git push origin main\n   ```\n   (Replace `main` with your branch name if different.)\n\nIf you meant something else by \"push all the existing code into this report,\" please clarify, and I'd be happy to help further!"
+    "content": "Hey, hi! I'm here and ready to assist you. How about you? What's going on with you today?"
   },
   {
     "role": "user",
-    "content": "okay now please check the gate ignore file of not modules and remaining.n win all the files before proceeding further"
+    "content": "request"
   },
   {
     "role": "assistant",
-    "content": "To check the `.gitignore` file and ensure that it includes the necessary entries for ignoring the `node_modules` directory and other files before proceeding, follow these steps:\n\n1. **Open the `.gitignore` File**: Locate the `.gitignore` file in the root of your project. You can open it in a text editor.\n\n2. **Check for `node_modules` Entry**: Ensure the following line is present to ignore the `node_modules` directory:\n   ```\n   node_modules/\n   ```\n\n3. **Check for Other Entries**: If there are other files or directories you want to ignore (like compiled files, logs, etc.), make sure they are also listed in the `.gitignore` file. Common entries might include:\n   ```\n   *.log\n   *.env\n   dist/\n   build/\n   ```\n\n4. **Save Changes**: If you made any changes to the `.gitignore` file, save it.\n\n5. **Verify Ignored Files**: You can check which files are being ignored by running the following command in your terminal:\n   ```bash\n   git check-ignore -v *\n   ```\n\nAfter confirming the `.gitignore` setup, you can proceed with your coding or version control tasks. If you have any specific questions or need further assistance, just let me know!"
+    "content": "Sure! What would you like to request? Let me know how I can assist you!"
   },
   {
     "role": "user",
-    "content": "actually didn't required total code please reach"
+    "content": "Telugu English Hindi"
   },
   {
     "role": "assistant",
-    "content": "It seems you want to review or revert the total code you have before proceeding. If you're using Git, you can check the status and view the changes. Here\u2019s how to proceed:\n\n1. **Check Status**: Run the following command in your terminal to see the current status of your repository:\n   ```bash\n   git status\n   ```\n\n2. **View Changes**: You can see the changes made to your code by running:\n   ```bash\n   git diff\n   ```\n\n3. **If you want to remove untracked files**: If you want to remove untracked files or revert changes, you can use:\n   ```bash\n   git clean -f\n   ```\n\n4. **Revert to Last Commit**: If you want to discard all changes and revert to the last committed state, use:\n   ```bash\n   git checkout -- .\n   ```\n\nMake sure to double-check before running these commands, as they can result in data loss if not used carefully. If you need more specific guidance or have another request, feel free to ask!"
+    "content": "Sure! I can respond in a mix of Telugu, English, and Hindi based on your preference. Just let me know what you\u2019d like to discuss or if you have any specific requests!"
   },
   {
     "role": "user",
-    "content": "give me powershell comments always why are you predicting like this"
+    "content": "language"
   }
 ]

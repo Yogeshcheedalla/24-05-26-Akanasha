@@ -34,6 +34,21 @@ import {
   type VoiceLanguagePreference,
   type VoiceTone,
 } from '@/hooks/useVoice';
+import {
+  addMinutes,
+  applyPlannerCommand,
+  applyPlannerReminderFollowUp,
+  cleanPlannerTitle,
+  extractDateValue,
+  extractTimeWindow,
+  inferPlannerCommand,
+  isLikelyTaskDetails,
+  isPlannerPreparationPrompt,
+  isReminderOnlyPlannerFollowUp,
+  isWeakPlannerTitle,
+  type PlannerCommand,
+} from '@/lib/plannerCommands';
+import { isAutomationIntent, normalizeAutomationPrompt } from '@/lib/automationCommands';
 
 type AssistantMode = 'text' | 'voice' | 'hybrid';
 type AssistantEmotion = 'happy' | 'neutral' | 'thinking' | 'sad' | 'surprised';
@@ -240,6 +255,8 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   const [showSettings, setShowSettings] = useState(true);
   const conversationRef = useRef<HTMLDivElement>(null);
   const spokenOffsetRef = useRef(0);
+  const pendingPlannerRef = useRef<PlannerCommand | null>(null);
+  const plannerContextRef = useRef('');
 
   const loadProfile = useCallback(async () => {
     setLoadingProfile(true);
@@ -442,7 +459,282 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   const handleConversationTurn = useCallback(
     async (message: string, inputMode: 'voice' | 'text') => {
       const trimmed = message.trim();
-      if (!trimmed || streaming) return;
+      const interruptionCommand =
+        /^(stop|wait|pause|hold on|enough|mute|silent|aagu|aapu|ruko|ruk jao)$/i.test(trimmed) ||
+        /^(ఆపు|ఆగు|रुको|बस)$/i.test(trimmed);
+
+      if (!trimmed) return;
+      if (interruptionCommand && (isSpeaking || streaming)) {
+        stopSpeaking();
+        setStreaming(false);
+        setAssistantEmotion('thinking');
+        setResponseText('Okay, I stopped. I am listening again.');
+        if (backgroundListening && inputMode === 'voice') {
+          startListening();
+        }
+        clearTranscript();
+        return;
+      }
+      if (streaming) return;
+
+      const resolvePlannerTitle = (draft: PlannerCommand) => {
+        if (!isWeakPlannerTitle(draft.title)) return draft.title;
+        const fallbackTitle = cleanPlannerTitle(plannerContextRef.current);
+        return isWeakPlannerTitle(fallbackTitle) ? draft.title : fallbackTitle;
+      };
+
+      const finalizePlannerAction = (draft: PlannerCommand) => {
+        const resolvedTitle = resolvePlannerTitle(draft).trim();
+        return applyPlannerCommand(
+          {
+            ...draft,
+            title: resolvedTitle,
+          },
+          resolvedTitle
+        );
+      };
+
+      const pendingPlanner = pendingPlannerRef.current;
+      if (pendingPlanner) {
+        if (isPlannerPreparationPrompt(trimmed)) {
+          const followUp =
+            pendingPlanner.kind === 'calendar'
+              ? 'I am still waiting for the real calendar details. Tell me the event title, date, time, and whether you want a reminder.'
+              : 'I am still waiting for the real to-do details. Tell me the actual items you want me to save.';
+          setAssistantEmotion('thinking');
+          setResponseText(followUp);
+          if (inputMode !== 'text' || assistantMode !== 'text') {
+            void speak(followUp, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+          }
+          return;
+        }
+
+        const replyLower = trimmed.toLowerCase();
+        const replyDate = extractDateValue(trimmed);
+        const replyTimes = extractTimeWindow(trimmed);
+        const treatAsTaskDetails =
+          pendingPlanner.kind === 'task' &&
+          !replyDate &&
+          !replyTimes.startTime &&
+          isLikelyTaskDetails(trimmed);
+        const reminderEnabled =
+          /\b(no|without)\b/.test(replyLower)
+            ? false
+            : pendingPlanner.reminderEnabled || /\b(yes|remind|notification|notify)\b/.test(replyLower);
+        const replyReminderTime = inferPlannerCommand(
+          `${pendingPlanner.kind === 'calendar' ? 'add to calendar' : 'add to todo list'} ${trimmed}`
+        )?.reminderAt;
+
+        const resolvedDraft: PlannerCommand = {
+          ...pendingPlanner,
+          title: treatAsTaskDetails ? trimmed : pendingPlanner.title,
+          date: replyDate || pendingPlanner.date || new Date().toISOString().slice(0, 10),
+          startTime: replyTimes.startTime || pendingPlanner.startTime,
+          endTime:
+            replyTimes.endTime ||
+            pendingPlanner.endTime ||
+            (replyTimes.startTime ? addMinutes(replyTimes.startTime, 30) : undefined),
+          reminderEnabled,
+          reminderAt:
+            replyReminderTime ||
+            pendingPlanner.reminderAt ||
+            (reminderEnabled && (replyDate || pendingPlanner.date || new Date().toISOString().slice(0, 10))
+              ? `${replyDate || pendingPlanner.date || new Date().toISOString().slice(0, 10)}T${
+                  replyTimes.startTime || pendingPlanner.startTime || '09:00'
+                }:00`
+              : undefined),
+        };
+
+        if (resolvedDraft.kind === 'calendar' && !resolvedDraft.startTime) {
+          const followUp =
+            'Got it. Tell me the reminder or event time in AM/PM format, like 6:30 PM or 9:15 AM.';
+          setResponseText(followUp);
+          if (inputMode !== 'text' || assistantMode !== 'text') {
+            void speak(followUp, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+          }
+          pendingPlannerRef.current = resolvedDraft;
+          return;
+        }
+
+        const plannerResult = finalizePlannerAction(resolvedDraft);
+        setAssistantEmotion(plannerResult.success ? 'happy' : 'thinking');
+        setResponseText(plannerResult.message);
+        if (inputMode !== 'text' || assistantMode !== 'text') {
+          void speak(plannerResult.message, {
+            voiceGender,
+            voiceLanguage,
+            voiceTone,
+            queue: false,
+          });
+        }
+        pendingPlannerRef.current = null;
+        return;
+      }
+
+      if (isReminderOnlyPlannerFollowUp(trimmed)) {
+        const plannerResult = applyPlannerReminderFollowUp(trimmed);
+        setAssistantEmotion(plannerResult.success ? 'happy' : 'thinking');
+        setResponseText(plannerResult.message);
+        if (inputMode !== 'text' || assistantMode !== 'text') {
+          void speak(plannerResult.message, {
+            voiceGender,
+            voiceLanguage,
+            voiceTone,
+            queue: false,
+          });
+        }
+        setTypedMessage('');
+        return;
+      }
+
+      if (isAutomationIntent(trimmed)) {
+        const automationPrompt = normalizeAutomationPrompt(trimmed);
+        setAssistantEmotion('thinking');
+        setStreaming(true);
+        setResponseText('');
+
+        try {
+          const automationResponse = await fetch('http://localhost:8000/api/automation/browser/prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt: automationPrompt,
+              background: true,
+            }),
+          });
+          const payload = await automationResponse.json();
+          const messageText =
+            payload?.message ||
+            payload?.detail ||
+            'I tried to run that automation command, but I could not confirm the result.';
+          const noteText = payload?.note ? ` ${payload.note}` : '';
+          const automationReply = `${messageText}${noteText}`.trim();
+          setAssistantEmotion(payload?.success ? 'happy' : 'thinking');
+          setResponseText(automationReply);
+          if (inputMode !== 'text' || assistantMode !== 'text') {
+            void speak(automationReply, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+          }
+          setTypedMessage('');
+          return;
+        } catch (error) {
+          console.error('Voice automation failed:', error);
+          const fallback =
+            'I tried to run that automation command, but the automation service was unavailable.';
+          setAssistantEmotion('thinking');
+          setResponseText(fallback);
+          if (inputMode !== 'text' || assistantMode !== 'text') {
+            void speak(fallback, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+          }
+          return;
+        } finally {
+          setStreaming(false);
+        }
+      }
+
+      const plannerIntent = inferPlannerCommand(trimmed);
+      if (plannerIntent) {
+        plannerContextRef.current = trimmed;
+        if (isPlannerPreparationPrompt(trimmed)) {
+          pendingPlannerRef.current = {
+            ...plannerIntent,
+            title: 'Planner item',
+          };
+          const followUp =
+            plannerIntent.kind === 'calendar'
+              ? 'Sure — tell me the actual calendar details in your next message, like the event title, date, time, and whether you want a reminder. I will wait instead of saving this setup sentence.'
+              : 'Sure — tell me the actual to-do items in your next message, and I will add them properly instead of saving this setup sentence.';
+          setAssistantEmotion('thinking');
+          setResponseText(followUp);
+          if (inputMode !== 'text' || assistantMode !== 'text') {
+            void speak(followUp, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+          }
+          return;
+        }
+
+        const needsReminderFollowUp =
+          plannerIntent.mode === 'create' &&
+          plannerIntent.reminderEnabled &&
+          !plannerIntent.reminderAt &&
+          !plannerIntent.startTime;
+        const needsCalendarTime =
+          plannerIntent.kind === 'calendar' &&
+          plannerIntent.mode === 'create' &&
+          (!plannerIntent.startTime || !plannerIntent.date);
+
+        if (needsReminderFollowUp || needsCalendarTime) {
+          pendingPlannerRef.current = plannerIntent;
+          const followUp =
+            plannerIntent.kind === 'calendar'
+              ? `I can add "${resolvePlannerTitle(plannerIntent)}" to your calendar. Do you want a reminder too? If yes, tell me the date and time in AM/PM, like tomorrow 6:30 PM.`
+              : `I can add "${resolvePlannerTitle(plannerIntent)}" to your to-do list. Do you want a reminder too? If yes, tell me the date and time in AM/PM, like today 8:45 PM.`;
+          setAssistantEmotion('thinking');
+          setResponseText(followUp);
+          if (inputMode !== 'text' || assistantMode !== 'text') {
+            void speak(followUp, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+          }
+          return;
+        }
+
+        const plannerResult = finalizePlannerAction({
+          ...plannerIntent,
+          title: resolvePlannerTitle(plannerIntent),
+          date: plannerIntent.date || new Date().toISOString().slice(0, 10),
+          endTime:
+            plannerIntent.kind === 'calendar'
+              ? plannerIntent.endTime || addMinutes(plannerIntent.startTime || '09:00', 30)
+              : plannerIntent.endTime,
+          reminderAt:
+            plannerIntent.reminderAt ||
+            (plannerIntent.reminderEnabled && (plannerIntent.date || new Date().toISOString().slice(0, 10))
+              ? `${plannerIntent.date || new Date().toISOString().slice(0, 10)}T${
+                  plannerIntent.startTime || '09:00'
+                }:00`
+              : undefined),
+        });
+        setAssistantEmotion(plannerResult.success ? 'happy' : 'thinking');
+        setResponseText(plannerResult.message);
+        if (inputMode !== 'text' || assistantMode !== 'text') {
+          void speak(plannerResult.message, {
+            voiceGender,
+            voiceLanguage,
+            voiceTone,
+            queue: false,
+          });
+        }
+        return;
+      }
+
+      plannerContextRef.current = trimmed;
 
       if (isSpeaking) {
         stopSpeaking();
@@ -523,12 +815,16 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
     },
     [
       assistantMode,
+      backgroundListening,
+      clearTranscript,
       isSpeaking,
       queueReadySpeech,
       sessionId,
+      startListening,
       stopSpeaking,
       streaming,
       voiceGender,
+      voiceLanguage,
       voiceTone,
     ]
   );

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Bell, CalendarDays, Check, CheckSquare, Clock3, Plus, Trash2, X } from 'lucide-react';
+import { Bell, CalendarDays, Check, CheckSquare, Clock3, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface TaskItem {
@@ -30,49 +30,11 @@ interface CalendarEvent {
 
 const TASKS_STORAGE_KEY = 'akansha-planner-tasks';
 const EVENTS_STORAGE_KEY = 'akansha-planner-events';
+const PLANNER_ACTION_EVENT = 'akansha-planner-action';
 
-const DEFAULT_TASKS: TaskItem[] = [
-  {
-    id: 'task-001',
-    title: 'Review pull request for auth module',
-    completed: false,
-    priority: 'high',
-    dueDate: '2026-04-25',
-    createdAt: new Date().toISOString(),
-    reminderEnabled: true,
-    reminderAt: new Date('2026-04-25T08:30:00').toISOString(),
-  },
-  {
-    id: 'task-002',
-    title: 'Prepare internship follow-up mail',
-    completed: false,
-    priority: 'medium',
-    dueDate: '2026-04-26',
-    createdAt: new Date().toISOString(),
-  },
-];
+const DEFAULT_TASKS: TaskItem[] = [];
 
-const DEFAULT_EVENTS: CalendarEvent[] = [
-  {
-    id: 'event-001',
-    title: 'AI internship mock interview',
-    date: '2026-04-25',
-    startTime: '18:00',
-    endTime: '19:00',
-    type: 'meeting',
-    reminderEnabled: true,
-    reminderAt: new Date('2026-04-25T17:45:00').toISOString(),
-  },
-  {
-    id: 'event-002',
-    title: 'Deep work block',
-    date: '2026-04-26',
-    startTime: '09:00',
-    endTime: '11:00',
-    type: 'focus',
-    reminderEnabled: false,
-  },
-];
+const DEFAULT_EVENTS: CalendarEvent[] = [];
 
 const PRIORITY_STYLES = {
   high: 'border-rose-500/25 bg-rose-500/10 text-rose-200',
@@ -96,6 +58,16 @@ function readStorage<T>(key: string, fallback: T): T {
   }
 }
 
+function writeStorage<T>(key: string, value: T) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(key, JSON.stringify(value));
+  window.dispatchEvent(new StorageEvent('storage', { key }));
+}
+
+function withoutLegacyPlannerSeed<T extends { id: string }>(items: T[]) {
+  return items.filter((item) => !['task-001', 'task-002', 'event-001', 'event-002'].includes(item.id));
+}
+
 function formatTime12h(time24: string) {
   const [h, m] = time24.split(':');
   const hours = parseInt(h);
@@ -108,26 +80,161 @@ function formatEventWindow(event: CalendarEvent) {
   return `${formatTime12h(event.startTime)} - ${formatTime12h(event.endTime)}`;
 }
 
-const TIME_OPTIONS = Array.from({ length: 24 * 12 }, (_, i) => {
-  const h = Math.floor(i / 12);
-  const m = (i % 12) * 5;
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const h12 = h % 12 || 12;
-  const value = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-  const label = `${h12}:${m.toString().padStart(2, '0')} ${ampm}`;
-  return { value, label };
-});
-
 function getEventStartDate(event: CalendarEvent) {
   return new Date(`${event.date}T${event.startTime}:00`);
+}
+
+function formatReminderTime(reminderAt?: string) {
+  if (!reminderAt) return '';
+  return new Date(reminderAt).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function toTwelveHourParts(time24: string) {
+  const [hourRaw = '09', minute = '00'] = (time24 || '09:00').split(':');
+  const hour = Number.parseInt(hourRaw, 10);
+  const period = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return {
+    hour: displayHour.toString(),
+    minute,
+    period,
+  };
+}
+
+function fromTwelveHourParts(hour: string, minute: string, period: string) {
+  const parsedHour = Number.parseInt(hour, 10);
+  const normalizedHour = Number.isNaN(parsedHour) ? 9 : Math.min(Math.max(parsedHour, 1), 12);
+  let hour24 = normalizedHour % 12;
+  if (period === 'PM') hour24 += 12;
+  return `${hour24.toString().padStart(2, '0')}:${minute.padStart(2, '0')}`;
+}
+
+function buildIsoDate(date: string, time24: string) {
+  return `${date}T${time24}:00`;
+}
+
+function extractStoredTime(reminderAt?: string, fallback = '09:00') {
+  if (!reminderAt) return fallback;
+  const match = reminderAt.match(/T(\d{2}:\d{2})/);
+  return match?.[1] || fallback;
+}
+
+function getNextQuarterHourTime() {
+  const now = new Date();
+  const minutes = now.getMinutes();
+  const roundedMinutes = Math.ceil((minutes + 1) / 5) * 5;
+  now.setMinutes(roundedMinutes, 0, 0);
+  const hh = now.getHours().toString().padStart(2, '0');
+  const mm = now.getMinutes().toString().padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function addMinutes(time24: string, minutesToAdd: number) {
+  const [hour, minute] = time24.split(':').map(Number);
+  const totalMinutes = hour * 60 + minute + minutesToAdd;
+  const normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const nextHour = Math.floor(normalized / 60)
+    .toString()
+    .padStart(2, '0');
+  const nextMinute = (normalized % 60).toString().padStart(2, '0');
+  return `${nextHour}:${nextMinute}`;
+}
+
+function TimePicker({
+  value,
+  onChange,
+  className = '',
+}: {
+  value: string;
+  onChange: (nextValue: string) => void;
+  className?: string;
+}) {
+  const parts = useMemo(() => toTwelveHourParts(value), [value]);
+  const hours = Array.from({ length: 12 }, (_, index) => `${index + 1}`);
+  const minutes = Array.from({ length: 60 }, (_, index) => `${index}`.padStart(2, '0'));
+
+  const update = (patch: Partial<typeof parts>) => {
+    const next = { ...parts, ...patch };
+    onChange(fromTwelveHourParts(next.hour, next.minute, next.period));
+  };
+
+  return (
+    <div className={`grid grid-cols-[1fr_1fr_1fr] gap-2 ${className}`}>
+      <select
+        value={parts.hour}
+        onChange={(event) => update({ hour: event.target.value })}
+        className="rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground outline-none"
+      >
+        {hours.map((hour) => (
+          <option key={hour} value={hour}>
+            {hour}
+          </option>
+        ))}
+      </select>
+      <select
+        value={parts.minute}
+        onChange={(event) => update({ minute: event.target.value })}
+        className="rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground outline-none"
+      >
+        {minutes.map((minute) => (
+          <option key={minute} value={minute}>
+            {minute}
+          </option>
+        ))}
+      </select>
+      <select
+        value={parts.period}
+        onChange={(event) => update({ period: event.target.value })}
+        className="rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground outline-none"
+      >
+        <option value="AM">AM</option>
+        <option value="PM">PM</option>
+      </select>
+    </div>
+  );
+}
+
+function showPlannerNotification(title: string, body: string) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  new Notification(title, {
+    body,
+    icon: '/favicon.ico',
+    requireInteraction: true,
+  });
+}
+
+async function sendDesktopPlannerNotification(title: string, body: string) {
+  try {
+    await fetch('http://localhost:8000/api/system/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, body }),
+    });
+  } catch (error) {
+    console.error('Failed to send desktop notification:', error);
+  }
+}
+
+async function sendPlannerTestAlert() {
+  showPlannerNotification('Akansha planner test', 'Browser reminder channel is active.');
+  await sendDesktopPlannerNotification(
+    'Akansha planner test',
+    'Desktop reminder channel is active.'
+  );
 }
 
 export default function TaskCalendarPanel() {
   const [activeTab, setActiveTab] = useState<'tasks' | 'calendar'>('tasks');
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [plannerLoaded, setPlannerLoaded] = useState(false);
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [showEventForm, setShowEventForm] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskPriority, setTaskPriority] = useState<TaskItem['priority']>('medium');
   const [taskDate, setTaskDate] = useState('');
@@ -142,104 +249,185 @@ export default function TaskCalendarPanel() {
   const [eventReminderTime, setEventReminderTime] = useState('08:45');
 
   useEffect(() => {
-    setTasks(readStorage(TASKS_STORAGE_KEY, DEFAULT_TASKS));
-    setEvents(readStorage(EVENTS_STORAGE_KEY, DEFAULT_EVENTS));
+    setTasks(withoutLegacyPlannerSeed(readStorage(TASKS_STORAGE_KEY, DEFAULT_TASKS)));
+    setEvents(withoutLegacyPlannerSeed(readStorage(EVENTS_STORAGE_KEY, DEFAULT_EVENTS)));
+    setPlannerLoaded(true);
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
-  }, [tasks]);
+    if (!plannerLoaded) return;
+    writeStorage(TASKS_STORAGE_KEY, tasks);
+  }, [plannerLoaded, tasks]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(events));
-  }, [events]);
+    if (!plannerLoaded) return;
+    writeStorage(EVENTS_STORAGE_KEY, events);
+  }, [events, plannerLoaded]);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || typeof Notification === 'undefined') return;
+    const syncPlannerState = (event?: StorageEvent) => {
+      if (
+        event?.key &&
+        event.key !== TASKS_STORAGE_KEY &&
+        event.key !== EVENTS_STORAGE_KEY
+      ) {
+        return;
+      }
 
-    const maybeNotify = () => {
-      const now = Date.now();
-      setEvents((previous) =>
-        previous.map((event) => {
-          if (!event.reminderEnabled || event.notified) return event;
-
-          const reminderTime = new Date(event.reminderAt ?? getEventStartDate(event)).getTime();
-          const diff = reminderTime - now;
-          if (diff <= 15 * 60 * 1000 && diff > 0 && Notification.permission === 'granted') {
-            new Notification(`Upcoming: ${event.title}`, {
-              body: `${event.date} · ${formatEventWindow(event)}`,
-            });
-            return { ...event, notified: true };
-          }
-          return event;
-        })
-      );
-
-      setTasks((previous) =>
-        previous.map((task) => {
-          if (!task.reminderEnabled || task.notified || !task.dueDate) return task;
-
-          const due = new Date(task.reminderAt ?? `${task.dueDate}T09:00:00`).getTime();
-          const diff = due - now;
-          if (diff <= 60 * 60 * 1000 && diff > 0 && Notification.permission === 'granted') {
-            new Notification(`Task due soon: ${task.title}`, {
-              body: `Due on ${task.dueDate}`,
-            });
-            return { ...task, notified: true };
-          }
-          return task;
-        })
-      );
+      setTasks(withoutLegacyPlannerSeed(readStorage(TASKS_STORAGE_KEY, DEFAULT_TASKS)));
+      setEvents(withoutLegacyPlannerSeed(readStorage(EVENTS_STORAGE_KEY, DEFAULT_EVENTS)));
     };
 
-    const interval = window.setInterval(maybeNotify, 30000);
-    return () => window.clearInterval(interval);
+    window.addEventListener('storage', syncPlannerState);
+    return () => window.removeEventListener('storage', syncPlannerState);
   }, []);
 
-  const requestNotificationPermission = async () => {
+  useEffect(() => {
+    const handlePlannerAction = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        type: 'task' | 'calendar';
+        title: string;
+        dueDate?: string;
+        date?: string;
+        startTime?: string;
+        endTime?: string;
+        reminderEnabled?: boolean;
+        reminderAt?: string;
+      }>;
+      const detail = customEvent.detail;
+      if (!detail?.title?.trim()) return;
+
+      if (detail.type === 'task') {
+        const nextTask: TaskItem = {
+          id: `task-${Date.now()}`,
+          title: detail.title.trim(),
+          completed: false,
+          priority: 'medium',
+          dueDate: detail.dueDate,
+          createdAt: new Date().toISOString(),
+          reminderEnabled: Boolean(detail.reminderEnabled),
+          reminderAt: detail.reminderAt,
+          notified: false,
+        };
+        setActiveTab('tasks');
+        setTasks((previous) => [nextTask, ...previous]);
+        toast.success('Added to your to-do planner');
+        return;
+      }
+
+      const nextEvent: CalendarEvent = {
+        id: `event-${Date.now()}`,
+        title: detail.title.trim(),
+        date: detail.date || new Date().toISOString().slice(0, 10),
+        startTime: detail.startTime || getNextQuarterHourTime(),
+        endTime: detail.endTime || addMinutes(detail.startTime || getNextQuarterHourTime(), 30),
+        type: 'reminder',
+        reminderEnabled: Boolean(detail.reminderEnabled),
+        reminderAt: detail.reminderAt,
+        notified: false,
+      };
+      setActiveTab('calendar');
+      setEvents((previous) =>
+        [...previous, nextEvent].sort(
+          (a, b) => getEventStartDate(a).getTime() - getEventStartDate(b).getTime()
+        )
+      );
+      toast.success('Added to your calendar planner');
+    };
+
+    window.addEventListener(PLANNER_ACTION_EVENT, handlePlannerAction as EventListener);
+    return () =>
+      window.removeEventListener(PLANNER_ACTION_EVENT, handlePlannerAction as EventListener);
+  }, []);
+
+
+
+
+  const requestBrowserNotificationPermission = async () => {
     if (typeof Notification === 'undefined') {
-      toast.error('Notifications are not supported in this browser.');
-      return false;
+      toast.info('Browser notifications are unavailable here. Desktop alerts will still be used.');
+      return true;
     }
 
     if (Notification.permission === 'granted') return true;
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') {
-      toast.error('Notification permission was not granted.');
-      return false;
+      toast.info('Browser notifications were not granted. Desktop alerts will still try to appear.');
+      return true;
     }
     toast.success('Notifications enabled for planner reminders');
     return true;
   };
 
-  const addTask = async () => {
-    if (!taskTitle.trim()) return;
-
-    const nextTask: TaskItem = {
-      id: `task-${Date.now()}`,
-      title: taskTitle.trim(),
-      completed: false,
-      priority: taskPriority,
-      dueDate: taskDate || undefined,
-      createdAt: new Date().toISOString(),
-      reminderEnabled: taskReminder && (typeof Notification !== 'undefined' && Notification.permission === 'granted'),
-      reminderAt:
-        taskReminder && taskDate
-          ? new Date(`${taskDate}T${taskReminderTime}:00`).toISOString()
-          : undefined,
-      notified: false,
-    };
-
-    setTasks((previous) => [nextTask, ...previous]);
+  const resetTaskForm = () => {
+    setEditingTaskId(null);
     setTaskTitle('');
     setTaskPriority('medium');
     setTaskDate('');
     setTaskReminder(false);
     setTaskReminderTime('09:00');
     setShowTaskForm(false);
-    toast.success('Task added to your planner');
+  };
+
+  const resetEventForm = () => {
+    setEditingEventId(null);
+    setEventTitle('');
+    setEventDate('');
+    setEventStartTime('09:00');
+    setEventEndTime('10:00');
+    setEventType('meeting');
+    setEventReminder(true);
+    setEventReminderTime('08:45');
+    setShowEventForm(false);
+  };
+
+  const editTask = (task: TaskItem) => {
+    setEditingTaskId(task.id);
+    setTaskTitle(task.title);
+    setTaskPriority(task.priority);
+    setTaskDate(task.dueDate || '');
+    setTaskReminder(Boolean(task.reminderEnabled));
+    setTaskReminderTime(task.reminderAt ? extractStoredTime(task.reminderAt, '09:00') : '09:00');
+    setShowTaskForm(true);
+  };
+
+  const editEvent = (event: CalendarEvent) => {
+    setEditingEventId(event.id);
+    setEventTitle(event.title);
+    setEventDate(event.date);
+    setEventStartTime(event.startTime);
+    setEventEndTime(event.endTime);
+    setEventType(event.type);
+    setEventReminder(event.reminderEnabled);
+    setEventReminderTime(event.reminderAt ? extractStoredTime(event.reminderAt, addMinutes(event.startTime, -15)) : addMinutes(event.startTime, -15));
+    setShowEventForm(true);
+  };
+
+  const addTask = async () => {
+    if (!taskTitle.trim()) return;
+
+    const nextTask: TaskItem = {
+      id: editingTaskId || `task-${Date.now()}`,
+      title: taskTitle.trim(),
+      completed: false,
+      priority: taskPriority,
+      dueDate: taskDate || undefined,
+      createdAt: new Date().toISOString(),
+      reminderEnabled: taskReminder,
+      reminderAt:
+        taskReminder && taskDate
+          ? buildIsoDate(taskDate, taskReminderTime)
+          : undefined,
+      notified: false,
+    };
+
+    setTasks((previous) =>
+      editingTaskId
+        ? previous.map((item) => (item.id === editingTaskId ? { ...item, ...nextTask } : item))
+        : [nextTask, ...previous]
+    );
+    resetTaskForm();
+    toast.success(editingTaskId ? 'Task updated' : 'Task added to your planner');
   };
 
   const addEvent = async () => {
@@ -255,34 +443,27 @@ export default function TaskCalendarPanel() {
     }
 
     const nextEvent: CalendarEvent = {
-      id: `event-${Date.now()}`,
+      id: editingEventId || `event-${Date.now()}`,
       title: eventTitle.trim(),
       date: eventDate,
       startTime: eventStartTime,
       endTime: eventEndTime,
       type: eventType,
-      reminderEnabled: eventReminder && (typeof Notification !== 'undefined' && Notification.permission === 'granted'),
+      reminderEnabled: eventReminder,
       reminderAt:
         eventReminder && eventDate
-          ? new Date(`${eventDate}T${eventReminderTime}:00`).toISOString()
+          ? buildIsoDate(eventDate, eventReminderTime)
           : undefined,
       notified: false,
     };
 
     setEvents((previous) =>
-      [...previous, nextEvent].sort(
+      [...previous.filter((item) => item.id !== editingEventId), nextEvent].sort(
         (a, b) => getEventStartDate(a).getTime() - getEventStartDate(b).getTime()
       )
     );
-    setEventTitle('');
-    setEventDate('');
-    setEventStartTime('09:00');
-    setEventEndTime('10:00');
-    setEventType('meeting');
-    setEventReminder(true);
-    setEventReminderTime('08:45');
-    setShowEventForm(false);
-    toast.success('Calendar event scheduled');
+    resetEventForm();
+    toast.success(editingEventId ? 'Calendar reminder updated' : 'Calendar event scheduled');
   };
 
   const pendingTasks = useMemo(() => tasks.filter((task) => !task.completed).length, [tasks]);
@@ -365,17 +546,18 @@ export default function TaskCalendarPanel() {
                     />
                   </div>
 
-                  <div 
-                    onClick={async () => {
-                      if (!taskReminder) {
-                        const allowed = await requestNotificationPermission();
-                        if (allowed) setTaskReminder(true);
-                      } else {
-                        setTaskReminder(false);
-                      }
-                    }}
-                    className="flex cursor-pointer items-center justify-between rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground hover:bg-white/[0.02] transition-colors"
-                  >
+                   <div
+                     onClick={async () => {
+                        if (!taskReminder) {
+                         await requestBrowserNotificationPermission();
+                         setTaskReminder(true);
+                         if (!taskReminderTime) setTaskReminderTime('09:00');
+                       } else {
+                         setTaskReminder(false);
+                       }
+                     }}
+                     className="flex cursor-pointer items-center justify-between rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground hover:bg-white/[0.02] transition-colors"
+                   >
                     Reminder notification
                       <div
                         className={`relative h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out focus:outline-none ${
@@ -390,22 +572,15 @@ export default function TaskCalendarPanel() {
                       </div>
                   </div>
 
-                  {taskReminder && taskDate && (
+                   {taskReminder && taskDate && (
                     <label className="block">
                       <span className="mb-2 block text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         Custom reminder time
                       </span>
-                      <select
+                      <TimePicker
                         value={taskReminderTime}
-                        onChange={(event) => setTaskReminderTime(event.target.value)}
-                        className="w-full rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground outline-none"
-                      >
-                        {TIME_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={setTaskReminderTime}
+                      />
                     </label>
                   )}
 
@@ -415,10 +590,10 @@ export default function TaskCalendarPanel() {
                       className="inline-flex items-center gap-2 rounded-2xl bg-[#6C47FF] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#5A35EE]"
                     >
                       <Plus size={14} />
-                      Save task
+                      {editingTaskId ? 'Update task' : 'Save task'}
                     </button>
                     <button
-                      onClick={() => setShowTaskForm(false)}
+                      onClick={resetTaskForm}
                       className="rounded-2xl border border-white/10 px-4 py-2.5 text-sm text-muted-foreground hover:bg-muted"
                     >
                       Cancel
@@ -489,26 +664,29 @@ export default function TaskCalendarPanel() {
                         {task.reminderEnabled && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-200">
                             <Bell size={11} />
-                            {task.reminderAt
-                              ? `Notify ${new Date(task.reminderAt).toLocaleTimeString([], {
-                                  hour: 'numeric',
-                                  minute: '2-digit',
-                                })}`
-                              : 'Notify'}
+                            {task.reminderAt ? `Notify ${formatReminderTime(task.reminderAt)}` : 'Notify'}
                           </span>
                         )}
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => {
-                        setTasks((previous) => previous.filter((item) => item.id !== task.id));
-                        toast.success('Task removed');
-                      }}
-                      className="opacity-0 transition-opacity group-hover:opacity-100 rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-red-400"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <button
+                        onClick={() => editTask(task)}
+                        className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setTasks((previous) => previous.filter((item) => item.id !== task.id));
+                          toast.success('Task removed');
+                        }}
+                        className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-red-400"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -522,6 +700,16 @@ export default function TaskCalendarPanel() {
               <div className="flex items-center gap-2">
                 <Bell size={15} className="text-sky-300" />
                 <p className="text-sm font-medium text-foreground">Today's time windows</p>
+                <button
+                  onClick={() => {
+                    void sendPlannerTestAlert();
+                    toast.success('Test alert sent');
+                  }}
+                  className="ml-auto inline-flex items-center gap-2 rounded-full border border-white/10 bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-white/[0.04]"
+                >
+                  <Bell size={12} />
+                  Send test alert
+                </button>
               </div>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
                 Calendar events now use a proper <span className="text-foreground">start time</span>{' '}
@@ -547,28 +735,14 @@ export default function TaskCalendarPanel() {
                       onChange={(event) => setEventDate(event.target.value)}
                       className="rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground outline-none"
                     />
-                    <select
+                    <TimePicker
                       value={eventStartTime}
-                      onChange={(event) => setEventStartTime(event.target.value)}
-                      className="rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground outline-none"
-                    >
-                      {TIME_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                    <select
+                      onChange={setEventStartTime}
+                    />
+                    <TimePicker
                       value={eventEndTime}
-                      onChange={(event) => setEventEndTime(event.target.value)}
-                      className="rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground outline-none"
-                    >
-                      {TIME_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setEventEndTime}
+                    />
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -584,17 +758,24 @@ export default function TaskCalendarPanel() {
                       <option value="focus">Focus block</option>
                     </select>
 
-                    <div 
-                      onClick={async () => {
-                        if (!eventReminder) {
-                          const allowed = await requestNotificationPermission();
-                          if (allowed) setEventReminder(true);
-                        } else {
-                          setEventReminder(false);
-                        }
-                      }}
-                      className="flex cursor-pointer items-center justify-between rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground hover:bg-white/[0.02] transition-colors"
-                    >
+                   <div
+                     onClick={async () => {
+                      if (!eventReminder) {
+                         await requestBrowserNotificationPermission();
+                         setEventReminder(true);
+                         if (!eventReminderTime && eventStartTime) {
+                           const [h, m] = eventStartTime.split(':').map(Number);
+                           const reminderMins = (h * 60 + m - 15 + 24 * 60) % (24 * 60);
+                           const reminderH = Math.floor(reminderMins / 60);
+                           const reminderM = reminderMins % 60;
+                           setEventReminderTime(`${reminderH.toString().padStart(2, '0')}:${reminderM.toString().padStart(2, '0')}`);
+                         }
+                       } else {
+                         setEventReminder(false);
+                       }
+                     }}
+                     className="flex cursor-pointer items-center justify-between rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground hover:bg-white/[0.02] transition-colors"
+                   >
                       Notify me
                       <div
                         className={`relative h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out focus:outline-none ${
@@ -610,22 +791,15 @@ export default function TaskCalendarPanel() {
                     </div>
                   </div>
 
-                  {eventReminder && (
+                  {eventReminder && eventDate && (
                     <label className="block">
                       <span className="mb-2 block text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         Custom reminder time
                       </span>
-                      <select
+                      <TimePicker
                         value={eventReminderTime}
-                        onChange={(event) => setEventReminderTime(event.target.value)}
-                        className="w-full rounded-2xl border border-white/10 bg-card px-3 py-3 text-sm text-foreground outline-none"
-                      >
-                        {TIME_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={setEventReminderTime}
+                      />
                     </label>
                   )}
 
@@ -635,10 +809,10 @@ export default function TaskCalendarPanel() {
                       className="inline-flex items-center gap-2 rounded-2xl bg-sky-500 px-4 py-2.5 text-sm font-medium text-slate-950 transition-colors hover:bg-sky-400"
                     >
                       <Plus size={14} />
-                      Save event
+                      {editingEventId ? 'Update event' : 'Save event'}
                     </button>
                     <button
-                      onClick={() => setShowEventForm(false)}
+                      onClick={resetEventForm}
                       className="rounded-2xl border border-white/10 px-4 py-2.5 text-sm text-muted-foreground hover:bg-muted"
                     >
                       <X size={14} className="inline" />
@@ -686,25 +860,30 @@ export default function TaskCalendarPanel() {
                           <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-200">
                             <Bell size={11} />
                             {event.reminderAt
-                              ? `Notify ${new Date(event.reminderAt).toLocaleTimeString([], {
-                                  hour: 'numeric',
-                                  minute: '2-digit',
-                                })}`
+                              ? `Notify ${formatReminderTime(event.reminderAt)}`
                               : 'Notification'}
                           </span>
                         )}
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => {
-                        setEvents((previous) => previous.filter((item) => item.id !== event.id));
-                        toast.success('Calendar event removed');
-                      }}
-                      className="opacity-0 transition-opacity group-hover:opacity-100 rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-red-400"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <button
+                        onClick={() => editEvent(event)}
+                        className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setEvents((previous) => previous.filter((item) => item.id !== event.id));
+                          toast.success('Calendar event removed');
+                        }}
+                        className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-red-400"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

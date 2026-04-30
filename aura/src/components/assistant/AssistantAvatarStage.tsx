@@ -28,6 +28,18 @@ const VIDEO_SEGMENTS = {
   },
 } as const;
 
+const VISEME_ANCHORS: Record<number, number[]> = {
+  0: [2.38, 6.52],
+  1: [3.02, 3.33, 4.02],
+  2: [2.72, 5.4],
+  3: [3.68, 6.18],
+  4: [2.46, 6.52],
+  5: [4.66],
+  6: [5.04],
+  7: [5.82],
+  8: [4.32],
+};
+
 const STAGE_VARIANTS: Record<
   VoiceGender,
   {
@@ -99,17 +111,20 @@ export function AssistantAvatarStage({
       }
 
       if (interactionMode === 'speaking') {
-        const anchors = VIDEO_SEGMENTS.speaking.anchors;
-        const anchorBias = Math.round(Math.max(0, Math.min(5, viseme)) + speakingVolume * 5);
-        const anchorIndex = Math.max(0, Math.min(anchors.length - 1, anchorBias));
-        phaseRef.current = (phaseRef.current + 0.055 + speakingVolume * 0.03) % 1;
-        const microMotion = Math.sin(phaseRef.current * Math.PI * 2) * 0.06;
+        const visemeKey = Math.max(0, Math.min(8, Math.round(viseme)));
+        const anchors = VISEME_ANCHORS[visemeKey] ?? VIDEO_SEGMENTS.speaking.anchors;
+        phaseRef.current = (phaseRef.current + 0.18 + speakingVolume * 0.04) % 1;
+        const anchorIndex = Math.min(
+          anchors.length - 1,
+          Math.floor(phaseRef.current * anchors.length)
+        );
+        const microMotion = Math.sin(phaseRef.current * Math.PI * 2) * 0.018;
         const targetTime = Math.max(
           VIDEO_SEGMENTS.speaking.start,
           Math.min(VIDEO_SEGMENTS.speaking.end, anchors[anchorIndex] + microMotion)
         );
 
-        if (Math.abs(video.currentTime - targetTime) > 0.04) {
+        if (Math.abs(video.currentTime - targetTime) > 0.018) {
           video.currentTime = targetTime;
         }
       } else if (interactionMode === 'listening') {

@@ -144,6 +144,53 @@ def _open_external_url(url: str) -> str:
     return normalized
 
 
+def _extract_amount(payload: dict, default: int = 5) -> int:
+    raw_value = payload.get("amount", payload.get("steps", payload.get("value", default)))
+    try:
+        parsed = int(float(str(raw_value)))
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, 100))
+
+
+def _set_windows_brightness(value: int) -> int:
+    safe_value = max(0, min(int(value), 100))
+    command = (
+        "$monitor = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods "
+        "-ErrorAction Stop | Select-Object -First 1; "
+        f"Invoke-CimMethod -InputObject $monitor -MethodName WmiSetBrightness "
+        f"-Arguments @{{Timeout=1;Brightness={safe_value}}} | Out-Null"
+    )
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", command],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "Windows brightness control is unavailable on this display.")
+    return safe_value
+
+
+def _get_windows_brightness() -> int:
+    command = (
+        "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness "
+        "-ErrorAction Stop | Select-Object -First 1).CurrentBrightness"
+    )
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", command],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "Windows brightness status is unavailable on this display.")
+    match = re.search(r"\d+", completed.stdout)
+    if not match:
+        raise RuntimeError("Windows did not return a current brightness value.")
+    return max(0, min(int(match.group(0)), 100))
+
+
 async def execute_desktop_command(action: str, target: str = None, payload: dict | None = None):
     """Executes desktop and browser automation commands with best-effort safety."""
     payload = payload or {}
@@ -299,6 +346,33 @@ async def execute_desktop_command(action: str, target: str = None, payload: dict
                 "url": opened_url,
                 "note": "Playing media in the background still depends on the browser and site autoplay rules.",
             }
+
+        if action == "volume_up":
+            presses = _extract_amount(payload, 5)
+            pyautogui.press("volumeup", presses=presses, interval=0.03)
+            return {"success": True, "message": f"Increased system volume by {presses} step(s)."}
+
+        if action == "volume_down":
+            presses = _extract_amount(payload, 5)
+            pyautogui.press("volumedown", presses=presses, interval=0.03)
+            return {"success": True, "message": f"Decreased system volume by {presses} step(s)."}
+
+        if action in {"volume_mute", "volume_unmute"}:
+            pyautogui.press("volumemute")
+            return {"success": True, "message": "Toggled system mute."}
+
+        if action == "set_brightness":
+            value = _extract_amount(payload, 60)
+            applied = _set_windows_brightness(value)
+            return {"success": True, "message": f"Set screen brightness to {applied}%."}
+
+        if action in {"brightness_up", "brightness_down"}:
+            amount = _extract_amount(payload, 10)
+            current = _get_windows_brightness()
+            target_value = current + amount if action == "brightness_up" else current - amount
+            applied = _set_windows_brightness(target_value)
+            verb = "Increased" if action == "brightness_up" else "Decreased"
+            return {"success": True, "message": f"{verb} screen brightness to {applied}%."}
 
         if action == "new_tab":
             pyautogui.hotkey("ctrl", "t")

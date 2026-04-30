@@ -30,6 +30,13 @@ interface QueuedSpeechItem {
 }
 
 type VoiceLanguageMode = 'english' | 'telugu' | 'mixed' | 'hindi';
+type VisemeCode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+
+interface VisemeFrame {
+  at: number;
+  viseme: VisemeCode;
+  intensity: number;
+}
 
 interface VoiceState {
   isListening: boolean;
@@ -103,6 +110,93 @@ const FEMALE_SAMPLE_OPTION: VoiceOption = {
   gender: 'female',
   kind: 'sample',
 };
+const SPEECH_INTERRUPT_PATTERN =
+  /\b(stop|wait|pause|hold on|enough|silent|mute|aagu|aapu|ruko|ruk jao)\b|ఆపు|ఆగు|रुको|बस/i;
+
+const TELUGU_VISEMES: Record<string, VisemeCode> = {
+  '\u0C05': 1, '\u0C06': 1, '\u0C3E': 1,
+  '\u0C07': 2, '\u0C08': 2, '\u0C0E': 2, '\u0C0F': 2, '\u0C10': 2,
+  '\u0C3F': 2, '\u0C40': 2, '\u0C46': 2, '\u0C47': 2, '\u0C48': 2,
+  '\u0C09': 3, '\u0C0A': 3, '\u0C12': 3, '\u0C13': 3, '\u0C14': 3,
+  '\u0C41': 3, '\u0C42': 3, '\u0C4A': 3, '\u0C4B': 3, '\u0C4C': 3,
+  '\u0C2A': 4, '\u0C2B': 4, '\u0C2C': 4, '\u0C2D': 4, '\u0C2E': 4,
+  '\u0C35': 5,
+  '\u0C24': 6, '\u0C25': 6, '\u0C26': 6, '\u0C27': 6, '\u0C1F': 6,
+  '\u0C20': 6, '\u0C21': 6, '\u0C22': 6, '\u0C28': 6, '\u0C23': 6,
+  '\u0C32': 6, '\u0C33': 6, '\u0C30': 6, '\u0C31': 6, '\u0C38': 6,
+  '\u0C15': 7, '\u0C16': 7, '\u0C17': 7, '\u0C18': 7, '\u0C1A': 7,
+  '\u0C1B': 7, '\u0C1C': 7, '\u0C1D': 7, '\u0C2F': 7, '\u0C36': 7,
+  '\u0C37': 7, '\u0C39': 7,
+};
+
+const HINDI_VISEMES: Record<string, VisemeCode> = {
+  '\u0905': 1, '\u0906': 1, '\u093E': 1,
+  '\u0907': 2, '\u0908': 2, '\u090F': 2, '\u0910': 2,
+  '\u093F': 2, '\u0940': 2, '\u0947': 2, '\u0948': 2,
+  '\u0909': 3, '\u090A': 3, '\u0913': 3, '\u0914': 3,
+  '\u0941': 3, '\u0942': 3, '\u094B': 3, '\u094C': 3,
+  '\u092A': 4, '\u092B': 4, '\u092C': 4, '\u092D': 4, '\u092E': 4,
+  '\u0935': 5,
+  '\u0924': 6, '\u0925': 6, '\u0926': 6, '\u0927': 6, '\u091F': 6,
+  '\u0920': 6, '\u0921': 6, '\u0922': 6, '\u0928': 6, '\u0923': 6,
+  '\u0932': 6, '\u0930': 6, '\u0938': 6,
+  '\u0915': 7, '\u0916': 7, '\u0917': 7, '\u0918': 7, '\u091A': 7,
+  '\u091B': 7, '\u091C': 7, '\u091D': 7, '\u092F': 7, '\u0936': 7,
+  '\u0937': 7, '\u0939': 7,
+};
+
+function latinVisemeAt(text: string, index: number): VisemeCode {
+  const pair = text.slice(index, index + 2).toLowerCase();
+  const char = text[index]?.toLowerCase() ?? '';
+  if (!char.trim()) return 0;
+  if (/[.!?,;:]/.test(char)) return 0;
+  if (['ch', 'sh', 'jh', 'gy'].includes(pair)) return 7;
+  if (pair === 'th') return 6;
+  if (char === 'a') return 1;
+  if ('eiy'.includes(char)) return 2;
+  if ('ouw'.includes(char)) return 3;
+  if ('pbm'.includes(char)) return 4;
+  if ('fv'.includes(char)) return 5;
+  if ('tdnlrsz'.includes(char)) return 6;
+  if ('kgqcjx'.includes(char)) return 7;
+  return 8;
+}
+
+function charToViseme(text: string, index: number): VisemeCode {
+  const char = text[index] ?? '';
+  if (TELUGU_VISEMES[char]) return TELUGU_VISEMES[char];
+  if (HINDI_VISEMES[char]) return HINDI_VISEMES[char];
+  return latinVisemeAt(text, index);
+}
+
+function buildVisemeTimeline(text: string, mode: VoiceLanguageMode, rate: number): VisemeFrame[] {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!clean) return [{ at: 0, viseme: 0, intensity: 0 }];
+
+  const frames: VisemeFrame[] = [];
+  let cursor = 0;
+  const baseMs = mode === 'telugu' || mode === 'hindi' ? 92 : mode === 'mixed' ? 84 : 74;
+  const msPerUnit = baseMs / Math.max(0.72, rate);
+
+  for (let index = 0; index < clean.length; index += 1) {
+    const char = clean[index] ?? '';
+    const viseme = charToViseme(clean, index);
+    const isPause = !char.trim() || /[.!?,;:]/.test(char);
+    const isIndianScript = /[\u0C00-\u0C7F\u0900-\u097F]/.test(char);
+    const duration = isPause ? msPerUnit * 2.35 : isIndianScript ? msPerUnit * 1.08 : msPerUnit;
+    const previous = frames[frames.length - 1];
+    const intensity = isPause ? 0 : viseme === 4 ? 0.42 : viseme === 1 ? 0.95 : 0.72;
+
+    if (!previous || previous.viseme !== viseme || isPause) {
+      frames.push({ at: cursor / 1000, viseme, intensity });
+    }
+
+    cursor += duration;
+  }
+
+  frames.push({ at: cursor / 1000, viseme: 0, intensity: 0 });
+  return frames;
+}
 
 function detectVoiceLanguageMode(
   text: string,
@@ -168,11 +262,18 @@ export function useVoice() {
   const speechQueueRef = useRef<QueuedSpeechItem[]>([]);
   const processingQueueRef = useRef(false);
   const stopRequestedRef = useRef(false);
+  const isSpeakingRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const sourceElementRef = useRef<HTMLAudioElement | null>(null);
   const audioFrameRef = useRef<number | null>(null);
+  const visemeTimelineRef = useRef<VisemeFrame[]>([]);
+  const visemeStartTimeRef = useRef(0);
+
+  useEffect(() => {
+    isSpeakingRef.current = state.isSpeaking;
+  }, [state.isSpeaking]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -240,6 +341,51 @@ export function useVoice() {
           } else {
             interim += `${value} `;
           }
+        }
+
+        const heardText = `${finalResult} ${interim}`.trim();
+        if (isSpeakingRef.current && SPEECH_INTERRUPT_PATTERN.test(heardText)) {
+          stopRequestedRef.current = true;
+          speechQueueRef.current = [];
+          processingQueueRef.current = false;
+          synthRef.current?.cancel();
+
+          const sampleAudio = sampleAudioRef.current;
+          if (sampleAudio) {
+            sampleAudio.pause();
+            sampleAudio.currentTime = 0;
+          }
+
+          const playbackAudio = playbackAudioRef.current;
+          if (playbackAudio) {
+            playbackAudio.pause();
+            playbackAudio.currentTime = 0;
+          }
+
+          if (playbackUrlRef.current) {
+            URL.revokeObjectURL(playbackUrlRef.current);
+            playbackUrlRef.current = null;
+          }
+
+          if (audioFrameRef.current) {
+            window.cancelAnimationFrame(audioFrameRef.current);
+            audioFrameRef.current = null;
+          }
+
+          if (visemeIntervalRef.current) {
+            window.clearInterval(visemeIntervalRef.current);
+            visemeIntervalRef.current = null;
+          }
+
+          setState((previous) => ({
+            ...previous,
+            isSpeaking: false,
+            speakingVolume: 0,
+            viseme: 0,
+            transcript: '',
+            finalTranscript: '',
+          }));
+          return;
         }
 
         setState((previous) => ({
@@ -344,19 +490,44 @@ export function useVoice() {
     [availableVoices, voiceGender, voiceLanguage]
   );
 
-  const startVisemeAnimation = useCallback(() => {
+  const startVisemeAnimation = useCallback((text?: string, mode: VoiceLanguageMode = 'english', tone: VoiceTone = 'friendly') => {
     if (typeof window === 'undefined') return;
     if (visemeIntervalRef.current) {
       window.clearInterval(visemeIntervalRef.current);
     }
 
+    const frames = text?.trim()
+      ? buildVisemeTimeline(text, mode, TONE_CONFIG[tone].rate)
+      : [];
+    visemeTimelineRef.current = frames;
+    visemeStartTimeRef.current = window.performance.now();
+
     visemeIntervalRef.current = window.setInterval(() => {
+      if (visemeTimelineRef.current.length) {
+        const elapsed = (window.performance.now() - visemeStartTimeRef.current) / 1000;
+        let activeFrame = visemeTimelineRef.current[0];
+        for (const frame of visemeTimelineRef.current) {
+          if (frame.at <= elapsed) {
+            activeFrame = frame;
+          } else {
+            break;
+          }
+        }
+
+        setState((previous) => ({
+          ...previous,
+          speakingVolume: activeFrame.intensity,
+          viseme: activeFrame.viseme,
+        }));
+        return;
+      }
+
       setState((previous) => ({
         ...previous,
         speakingVolume: 0.35 + Math.random() * 0.65,
         viseme: (previous.viseme + 1) % 5,
       }));
-    }, 110);
+    }, frames.length ? 34 : 110);
   }, []);
 
   const stopVisemeAnimation = useCallback(() => {
@@ -365,6 +536,7 @@ export function useVoice() {
       window.clearInterval(visemeIntervalRef.current);
       visemeIntervalRef.current = null;
     }
+    visemeTimelineRef.current = [];
     setState((previous) => ({ ...previous, speakingVolume: 0, viseme: 0 }));
   }, []);
 
@@ -434,10 +606,13 @@ export function useVoice() {
     }
   }, [startVisemeAnimation, stopAudioAnalysis]);
 
-  const startPlaybackAudioAnalysis = useCallback(() => {
+  const startPlaybackAudioAnalysis = useCallback((text?: string, mode: VoiceLanguageMode = 'english', tone: VoiceTone = 'friendly') => {
     if (typeof window === 'undefined' || !playbackAudioRef.current) return;
 
     const playbackAudio = playbackAudioRef.current;
+    const textFrames = text?.trim()
+      ? buildVisemeTimeline(text, mode, TONE_CONFIG[tone].rate)
+      : [];
 
     try {
       if (!audioContextRef.current) {
@@ -475,11 +650,27 @@ export function useVoice() {
         const average =
           dataArray.reduce((sum, value) => sum + value, 0) / Math.max(1, dataArray.length);
         const normalized = Math.min(1, average / 110);
+        let activeViseme = Math.max(0, Math.min(5, Math.round(normalized * 5)));
+        let activeVolume = normalized;
+
+        if (textFrames.length) {
+          let frame = textFrames[0];
+          for (const candidate of textFrames) {
+            if (candidate.at <= playbackAudio.currentTime) {
+              frame = candidate;
+            } else {
+              break;
+            }
+          }
+
+          activeViseme = frame.viseme;
+          activeVolume = Math.max(normalized * 0.55, frame.intensity * 0.9);
+        }
 
         setState((previous) => ({
           ...previous,
-          speakingVolume: normalized,
-          viseme: Math.max(0, Math.min(5, Math.round(normalized * 5))),
+          speakingVolume: activeVolume,
+          viseme: activeViseme,
         }));
 
         audioFrameRef.current = window.requestAnimationFrame(tick);
@@ -488,7 +679,7 @@ export function useVoice() {
       stopAudioAnalysis();
       tick();
     } catch {
-      startVisemeAnimation();
+      startVisemeAnimation(text, mode, tone);
     }
   }, [startVisemeAnimation, stopAudioAnalysis]);
 
@@ -583,12 +774,13 @@ export function useVoice() {
 
           audio.onplay = () => {
             setState((previous) => ({ ...previous, isSpeaking: true }));
-            startPlaybackAudioAnalysis();
+            startPlaybackAudioAnalysis(text, languageMode, resolvedTone);
           };
 
           await new Promise<void>((resolve, reject) => {
             audio.onended = () => {
               stopAudioAnalysis();
+              stopVisemeAnimation();
               setState((previous) => ({
                 ...previous,
                 isSpeaking: false,
@@ -600,6 +792,7 @@ export function useVoice() {
 
             audio.onerror = () => {
               stopAudioAnalysis();
+              stopVisemeAnimation();
               setState((previous) => ({
                 ...previous,
                 isSpeaking: false,
@@ -650,7 +843,7 @@ export function useVoice() {
 
       utterance.onstart = () => {
         setState((previous) => ({ ...previous, isSpeaking: true }));
-        startVisemeAnimation();
+        startVisemeAnimation(text, languageMode, resolvedTone);
       };
 
       await new Promise<void>((resolve, reject) => {
@@ -672,6 +865,7 @@ export function useVoice() {
     [
       selectedVoiceId,
       fetchSpeechBlob,
+      startPlaybackAudioAnalysis,
       startVisemeAnimation,
       stopAudioAnalysis,
       stopVisemeAnimation,

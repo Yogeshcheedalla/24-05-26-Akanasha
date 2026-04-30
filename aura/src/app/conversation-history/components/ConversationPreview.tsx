@@ -29,6 +29,7 @@ import { toast } from 'sonner';
 interface ConversationPreviewProps {
   conversation: Conversation;
   onClose: () => void;
+  onDeleteConversation?: (id: string) => Promise<void> | void;
 }
 
 const PREVIEW_MESSAGES = [
@@ -68,7 +69,11 @@ function formatDate(dateStr: string): string {
   });
 }
 
-export default function ConversationPreview({ conversation, onClose }: ConversationPreviewProps) {
+export default function ConversationPreview({
+  conversation,
+  onClose,
+  onDeleteConversation,
+}: ConversationPreviewProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'messages' | 'memory'>('overview');
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
@@ -81,8 +86,10 @@ export default function ConversationPreview({ conversation, onClose }: Conversat
     toast.success('Share link copied to clipboard');
   };
 
-  const handleDelete = () => {
-    toast.error(`"${conversation.title}" deleted`);
+  const handleDelete = async () => {
+    const confirmed = window.confirm(`Delete "${conversation.title}" from chat history?`);
+    if (!confirmed) return;
+    await onDeleteConversation?.(conversation.id);
     onClose();
   };
 
@@ -141,6 +148,7 @@ export default function ConversationPreview({ conversation, onClose }: Conversat
 
           <Link
             href="/chat-interface"
+            onClick={() => sessionStorage.setItem('akansha-active-session', conversation.id)}
             className="p-2 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
             title="Open in chat"
           >
@@ -266,6 +274,7 @@ export default function ConversationPreview({ conversation, onClose }: Conversat
             <div className="pt-4">
               <Link
                 href="/chat-interface"
+                onClick={() => sessionStorage.setItem('akansha-active-session', conversation.id)}
                 className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-2xl bg-[#6C47FF] hover:bg-[#5A35EE] text-white text-sm font-medium transition-all duration-150 active:scale-[0.98] shadow-sm shadow-[#6C47FF]/20"
               >
                 <Zap size={15} />

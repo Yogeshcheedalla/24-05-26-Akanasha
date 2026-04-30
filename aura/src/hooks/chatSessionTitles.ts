@@ -38,6 +38,36 @@ export function writeSessionTitle(sessionId: string, title: string) {
   );
 }
 
+export function deleteSessionTitle(sessionId: string) {
+  if (typeof window === 'undefined') return;
+
+  const titles = readSessionTitles();
+  delete titles[sessionId];
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(titles));
+  window.dispatchEvent(
+    new CustomEvent(CHAT_SESSION_TITLES_UPDATED, {
+      detail: {
+        sessionId,
+        title: '',
+        deleted: true,
+      },
+    })
+  );
+}
+
+export function clearSessionTitles() {
+  if (typeof window === 'undefined') return;
+
+  window.localStorage.removeItem(STORAGE_KEY);
+  window.dispatchEvent(
+    new CustomEvent(CHAT_SESSION_TITLES_UPDATED, {
+      detail: {
+        cleared: true,
+      },
+    })
+  );
+}
+
 export function getSessionTitle(sessionId: string, fallbackTitle: string) {
   const titles = readSessionTitles();
   return titles[sessionId] || fallbackTitle;

@@ -13,6 +13,9 @@ interface ConversationListProps {
   onSelectConversation: (conv: Conversation) => void;
   selectedIds: Set<string>;
   onSelectionChange: (ids: Set<string>) => void;
+  loading?: boolean;
+  onDeleteConversations?: (ids: string[]) => Promise<void> | void;
+  onClearHistory?: () => Promise<void> | void;
 }
 
 const MODEL_OPTIONS = ['All models', 'Akansha', 'Claude 3.5 Sonnet', 'Gemini 1.5 Pro'];
@@ -51,6 +54,9 @@ export default function ConversationList({
   onSelectConversation,
   selectedIds,
   onSelectionChange,
+  loading = false,
+  onDeleteConversations,
+  onClearHistory,
 }: ConversationListProps) {
   const [search, setSearch] = useState('');
   const [selectedModel, setSelectedModel] = useState('All models');
@@ -115,8 +121,14 @@ export default function ConversationList({
     }
   };
 
-  const handleBulkDelete = () => {
-    toast.success(`${selectedIds.size} conversation${selectedIds.size > 1 ? 's' : ''} deleted`);
+  const handleBulkDelete = async () => {
+    if (!selectedIds.size) return;
+    const confirmed = window.confirm(
+      `Delete ${selectedIds.size} selected conversation${selectedIds.size > 1 ? 's' : ''}?`
+    );
+    if (!confirmed) return;
+
+    await onDeleteConversations?.(Array.from(selectedIds));
     onSelectionChange(new Set());
   };
 
@@ -250,6 +262,16 @@ export default function ConversationList({
 
           <div className="flex-1" />
 
+          {conversations.length > 0 && (
+            <button
+              onClick={() => void onClearHistory?.()}
+              className="flex items-center gap-1.5 rounded-lg border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-xs font-medium text-red-500 transition-colors hover:bg-red-500/10"
+            >
+              <Trash2 size={12} />
+              Clear history
+            </button>
+          )}
+
           {/* Select all */}
           <button
             onClick={selectAll}
@@ -265,7 +287,9 @@ export default function ConversationList({
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center px-6">
             <MessageSquare size={32} className="text-muted-foreground/30 mb-3" />
-            <p className="text-sm font-medium text-muted-foreground">No conversations found</p>
+            <p className="text-sm font-medium text-muted-foreground">
+              {loading ? 'Loading conversations...' : 'No conversations found'}
+            </p>
             <p className="text-xs text-muted-foreground/60 mt-1">Try adjusting your search or filters</p>
             <Link
               href="/chat-interface"

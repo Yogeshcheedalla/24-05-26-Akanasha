@@ -11,12 +11,15 @@ import {
   Pencil,
   Check,
   X,
+  Trash2,
 } from 'lucide-react';
 import {
   CHAT_SESSION_TITLES_UPDATED,
+  deleteSessionTitle,
   getSessionTitle,
   writeSessionTitle,
 } from '@/hooks/chatSessionTitles';
+import { toast } from 'sonner';
 
 interface HistoryItem {
   id: string;
@@ -43,47 +46,50 @@ export default function ConversationSidebar({
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
 
-  useEffect(() => {
-    const loadHistory = () => {
-      fetch('http://localhost:8000/api/chat')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.messages) {
-            const sessionsMap: Record<string, HistoryItem> = {};
-            data.messages.forEach((m: any) => {
-              const sid = m.session_id || 'default';
-              const messageTimestamp = m.timestamp ? new Date(m.timestamp) : new Date();
-              if (!sessionsMap[sid]) {
-                sessionsMap[sid] = {
-                  id: sid,
-                  title: getSessionTitle(sid, m.role === 'user' ? m.content : 'New chat'),
-                  timestamp: messageTimestamp,
-                };
-                return;
-              }
+  const loadHistory = React.useCallback(() => {
+    fetch('http://localhost:8000/api/chat')
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.messages) {
+          setHistoryItems([]);
+          return;
+        }
 
-              if (m.role === 'user' && !sessionsMap[sid].title) {
-                sessionsMap[sid].title = m.content;
-              }
-
-              if (messageTimestamp > sessionsMap[sid].timestamp) {
-                sessionsMap[sid].timestamp = messageTimestamp;
-              }
-            });
-
-            const items = Object.values(sessionsMap)
-              .map((item) => ({
-                ...item,
-                title: getSessionTitle(item.id, item.title || 'New chat'),
-              }))
-              .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-            setHistoryItems(items);
+        const sessionsMap: Record<string, HistoryItem> = {};
+        data.messages.forEach((m: any) => {
+          const sid = m.session_id || 'default';
+          const messageTimestamp = m.timestamp ? new Date(m.timestamp) : new Date();
+          if (!sessionsMap[sid]) {
+            sessionsMap[sid] = {
+              id: sid,
+              title: getSessionTitle(sid, m.role === 'user' ? m.content : 'New chat'),
+              timestamp: messageTimestamp,
+            };
+            return;
           }
-        })
-        .catch((err) => console.error('Failed to load sidebar history:', err));
-    };
 
+          if (m.role === 'user' && !sessionsMap[sid].title) {
+            sessionsMap[sid].title = m.content;
+          }
+
+          if (messageTimestamp > sessionsMap[sid].timestamp) {
+            sessionsMap[sid].timestamp = messageTimestamp;
+          }
+        });
+
+        const items = Object.values(sessionsMap)
+          .map((item) => ({
+            ...item,
+            title: getSessionTitle(item.id, item.title || 'New chat'),
+          }))
+          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+        setHistoryItems(items);
+      })
+      .catch((err) => console.error('Failed to load sidebar history:', err));
+  }, []);
+
+  useEffect(() => {
     loadHistory();
     window.addEventListener('akansha-history-updated', loadHistory);
     window.addEventListener(CHAT_SESSION_TITLES_UPDATED, loadHistory);
@@ -91,7 +97,7 @@ export default function ConversationSidebar({
       window.removeEventListener('akansha-history-updated', loadHistory);
       window.removeEventListener(CHAT_SESSION_TITLES_UPDATED, loadHistory);
     };
-  }, []);
+  }, [loadHistory]);
 
   const startRenaming = (event: React.MouseEvent, conversation: HistoryItem) => {
     event.stopPropagation();
@@ -113,6 +119,33 @@ export default function ConversationSidebar({
     event?.stopPropagation();
     setEditingSessionId(null);
     setDraftTitle('');
+  };
+
+  const deleteConversation = async (event: React.MouseEvent, conversation: HistoryItem) => {
+    event.stopPropagation();
+    const confirmed = window.confirm(`Delete "${conversation.title}" from chat history?`);
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/chat/session/${encodeURIComponent(conversation.id)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || 'Could not delete this conversation.');
+      }
+
+      deleteSessionTitle(conversation.id);
+      setHistoryItems((items) => items.filter((item) => item.id !== conversation.id));
+      window.dispatchEvent(new CustomEvent('akansha-history-updated'));
+      if (conversation.id === activeSessionId) {
+        onNewChat();
+      }
+      toast.success('Conversation deleted');
+    } catch (error) {
+      console.error('Failed to delete conversation:', error);
+      toast.error(error instanceof Error ? error.message : 'Could not delete this conversation.');
+    }
   };
 
   const toggleGroup = (id: string) => {
@@ -260,6 +293,14 @@ export default function ConversationSidebar({
                             title="Rename chat"
                           >
                             <Pencil size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => deleteConversation(event, conv)}
+                            className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:bg-red-500/10 hover:text-red-500 transition-all"
+                            title="Delete chat"
+                          >
+                            <Trash2 size={12} />
                           </button>
                         </div>
                       )}

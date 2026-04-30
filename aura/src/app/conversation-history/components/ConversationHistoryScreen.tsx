@@ -1,9 +1,11 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import FolderSidebar from './FolderSidebar';
 import ConversationList from './ConversationList';
 import ConversationPreview from './ConversationPreview';
+import { clearSessionTitles, deleteSessionTitle, getSessionTitle } from '@/hooks/chatSessionTitles';
+import { toast } from 'sonner';
 
 export type Conversation = {
   id: string;
@@ -261,10 +263,175 @@ export const ALL_CONVERSATIONS: Conversation[] = [
   },
 ];
 
+function buildLiveConversations(messages: any[]): Conversation[] {
+  const sessions = new Map<
+    string,
+    {
+      id: string;
+      first: Date;
+      latest: Date;
+      title: string;
+      summary: string;
+      messageCount: number;
+      tokenCount: number;
+      hasAttachments: boolean;
+    }
+  >();
+
+  messages.forEach((message) => {
+    const sessionId = message.session_id || 'default';
+    const timestamp = message.timestamp ? new Date(message.timestamp) : new Date();
+    const content = String(message.content || '').trim();
+    const existing = sessions.get(sessionId);
+    const fallbackTitle = message.role === 'user' && content ? content : 'New chat';
+
+    if (!existing) {
+      sessions.set(sessionId, {
+        id: sessionId,
+        first: timestamp,
+        latest: timestamp,
+        title: getSessionTitle(sessionId, fallbackTitle),
+        summary: content || 'No message content saved yet.',
+        messageCount: 1,
+        tokenCount: Math.max(1, Math.floor(content.length / 4)),
+        hasAttachments: Boolean(message.attachments?.length),
+      });
+      return;
+    }
+
+    existing.messageCount += 1;
+    existing.tokenCount += Math.max(1, Math.floor(content.length / 4));
+    existing.hasAttachments = existing.hasAttachments || Boolean(message.attachments?.length);
+
+    if (timestamp < existing.first) existing.first = timestamp;
+    if (timestamp >= existing.latest) {
+      existing.latest = timestamp;
+      if (content) existing.summary = content;
+    }
+
+    if (message.role === 'user' && existing.title === 'New chat' && content) {
+      existing.title = getSessionTitle(sessionId, content);
+    }
+  });
+
+  return Array.from(sessions.values())
+    .map((session) => ({
+      id: session.id,
+      title: getSessionTitle(session.id, session.title || 'New chat'),
+      summary:
+        session.summary.length > 180
+          ? `${session.summary.slice(0, 177).trim()}...`
+          : session.summary,
+      model: 'Akansha',
+      modelColor: 'bg-green-500',
+      folder: 'Chats',
+      folderId: 'folder-chats',
+      messageCount: session.messageCount,
+      tokenCount: session.tokenCount,
+      createdAt: session.first.toISOString(),
+      updatedAt: session.latest.toISOString(),
+      starred: false,
+      shared: false,
+      hasMemory: true,
+      hasAttachments: session.hasAttachments,
+      tags: ['chat'],
+      status: 'active' as const,
+    }))
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
 export default function ConversationHistoryScreen() {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
-  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(ALL_CONVERSATIONS[0]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+
+  const loadConversations = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/chat');
+      const payload = await response.json();
+      const liveConversations = buildLiveConversations(payload.messages ?? []);
+      setConversations(liveConversations);
+      setSelectedConversation((current) => {
+        if (!current) return liveConversations[0] ?? null;
+        return liveConversations.find((conversation) => conversation.id === current.id) ?? liveConversations[0] ?? null;
+      });
+    } catch (error) {
+      console.error('Failed to load conversation history:', error);
+      setConversations([]);
+      setSelectedConversation(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadConversations();
+    window.addEventListener('akansha-history-updated', loadConversations);
+    return () => window.removeEventListener('akansha-history-updated', loadConversations);
+  }, [loadConversations]);
+
+  const deleteConversations = useCallback(
+    async (ids: string[]) => {
+      if (!ids.length) return;
+
+      try {
+        await Promise.all(
+          ids.map(async (id) => {
+            const response = await fetch(`http://localhost:8000/api/chat/session/${encodeURIComponent(id)}`, {
+              method: 'DELETE',
+            });
+            if (!response.ok) {
+              const payload = await response.json().catch(() => ({}));
+              throw new Error(payload.detail || `Could not delete ${id}.`);
+            }
+          })
+        );
+
+        ids.forEach(deleteSessionTitle);
+        setConversations((current) => current.filter((conversation) => !ids.includes(conversation.id)));
+        setSelectedIds(new Set());
+        setSelectedConversation((current) =>
+          current && ids.includes(current.id)
+            ? conversations.find((conversation) => !ids.includes(conversation.id)) ?? null
+            : current
+        );
+        window.dispatchEvent(new CustomEvent('akansha-history-updated'));
+        toast.success(`${ids.length} conversation${ids.length > 1 ? 's' : ''} deleted`);
+      } catch (error) {
+        console.error('Failed to delete history:', error);
+        toast.error(error instanceof Error ? error.message : 'Could not delete history.');
+      }
+    },
+    [conversations]
+  );
+
+  const clearHistory = useCallback(async () => {
+    const confirmed = window.confirm('Delete all saved chat history? This cannot be undone.');
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch('http://localhost:8000/api/chat/history', {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || 'Could not clear chat history.');
+      }
+
+      clearSessionTitles();
+      setConversations([]);
+      setSelectedConversation(null);
+      setSelectedIds(new Set());
+      window.dispatchEvent(new CustomEvent('akansha-history-updated'));
+      toast.success('Chat history cleared');
+    } catch (error) {
+      console.error('Failed to clear chat history:', error);
+      toast.error(error instanceof Error ? error.message : 'Could not clear chat history.');
+    }
+  }, []);
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -273,19 +440,22 @@ export default function ConversationHistoryScreen() {
         <FolderSidebar
           selectedFolder={selectedFolder}
           onSelectFolder={setSelectedFolder}
-          conversations={ALL_CONVERSATIONS}
+          conversations={conversations}
         />
       </div>
 
       {/* Conversation list */}
       <div className={`flex flex-col min-w-0 border-r border-border bg-background ${selectedConversation ? 'hidden lg:flex lg:w-[420px] xl:w-[480px] shrink-0' : 'flex-1'}`}>
         <ConversationList
-          conversations={ALL_CONVERSATIONS}
+          conversations={conversations}
           selectedFolder={selectedFolder}
           selectedConversation={selectedConversation}
           onSelectConversation={setSelectedConversation}
           selectedIds={selectedIds}
           onSelectionChange={setSelectedIds}
+          loading={loading}
+          onDeleteConversations={deleteConversations}
+          onClearHistory={clearHistory}
         />
       </div>
 
@@ -295,6 +465,7 @@ export default function ConversationHistoryScreen() {
           <ConversationPreview
             conversation={selectedConversation}
             onClose={() => setSelectedConversation(null)}
+            onDeleteConversation={(id) => deleteConversations([id])}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8">

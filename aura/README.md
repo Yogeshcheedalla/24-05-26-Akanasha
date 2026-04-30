@@ -36,7 +36,7 @@ Backend:
 uvicorn backend.main:app --reload --port 8000
 ```
 
-Frontend runs on [http://localhost:4030](http://localhost:4030) and the API runs on [http://localhost:8000](http://localhost:8000).
+Frontend runs on [http://localhost:4000](http://localhost:4000) and the API runs on [http://localhost:8000](http://localhost:8000).
 
 ## Required environment variables
 

@@ -17,6 +17,23 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  addMinutes,
+  applyPlannerCommand,
+  applyPlannerReminderFollowUp,
+  cleanPlannerTitle,
+  extractDateValue,
+  extractTimeWindow,
+  formatTime12h,
+  inferPlannerCommand,
+  isLikelyTaskDetails,
+  isPlannerPreparationPrompt,
+  isReminderOnlyPlannerFollowUp,
+  isWeakPlannerTitle,
+  type PlannerCommand,
+} from '@/lib/plannerCommands';
+import { isAutomationIntent, normalizeAutomationPrompt } from '@/lib/automationCommands';
+import { deleteSessionTitle } from '@/hooks/chatSessionTitles';
 
 export interface Message {
   id: string;
@@ -140,6 +157,7 @@ export default function ChatThread({
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const micStoppedManuallyRef = useRef(false);
   const pendingTranscriptRef = useRef('');
+  const pendingPlannerRef = useRef<PlannerCommand | null>(null);
 
   useEffect(() => {
     activeSessionIdRef.current = sessionId;
@@ -321,6 +339,35 @@ export default function ChatThread({
     [selectedModel, speak]
   );
 
+  const addAssistantMessage = useCallback(
+    (content: string, emotion: Emotion = 'neutral') => {
+      const nextMessage: Message = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        role: 'assistant',
+        content,
+        model: selectedModel,
+        timestamp: new Date(),
+        tokenCount: Math.floor(content.length / 4),
+        emotion,
+      };
+      setMessages((previous) => [...previous, nextMessage]);
+      fetch('http://localhost:8000/api/chat/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: 'assistant',
+          content,
+          session_id: activeSessionIdRef.current,
+        }),
+      })
+        .then(() => {
+          window.dispatchEvent(new CustomEvent('akansha-history-updated'));
+        })
+        .catch((error) => console.error('Failed to persist planner assistant message:', error));
+    },
+    [selectedModel]
+  );
+
   const handleSend = useCallback(
     (content: string, attachments?: File[]) => {
       if (!content.trim()) return;
@@ -339,6 +386,205 @@ export default function ChatThread({
       };
       setMessages((prev) => [...prev, userMsg]);
       setCurrentEmotion('thinking');
+
+      const persistPlannerSideMessage = (role: 'user' | 'assistant', messageContent: string) => {
+        fetch('http://localhost:8000/api/chat/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            role,
+            content: messageContent,
+            session_id: activeSessionIdRef.current,
+          }),
+        })
+          .then(() => {
+            window.dispatchEvent(new CustomEvent('akansha-history-updated'));
+          })
+          .catch((error) => console.error(`Failed to persist ${role} planner message:`, error));
+      };
+
+      const resolvePlannerTitle = (draft: PlannerCommand) => {
+        if (!isWeakPlannerTitle(draft.title)) return draft.title;
+
+        const previousUserMessage = [...messages]
+          .reverse()
+          .find(
+            (message) =>
+              message.role === 'user' &&
+              message.content.trim().toLowerCase() !== content.trim().toLowerCase() &&
+              !inferPlannerCommand(message.content)
+          );
+
+        if (!previousUserMessage) return draft.title;
+        const nextTitle = cleanPlannerTitle(previousUserMessage.content);
+        return isWeakPlannerTitle(nextTitle) ? draft.title : nextTitle;
+      };
+
+      const finalizePlannerAction = (draft: PlannerCommand) => {
+        const resolvedTitle = resolvePlannerTitle(draft).trim();
+        return applyPlannerCommand(
+          {
+            ...draft,
+            title: resolvedTitle,
+          },
+          resolvedTitle
+        );
+      };
+
+      const pendingPlanner = pendingPlannerRef.current;
+      if (pendingPlanner) {
+        if (isPlannerPreparationPrompt(content)) {
+          addAssistantMessage(
+            pendingPlanner.kind === 'calendar'
+              ? 'I am still waiting for the real calendar details. Tell me the event title, date, time, and whether you want a reminder.'
+              : 'I am still waiting for the real to-do details. Tell me the actual items you want me to save.',
+            'thinking'
+          );
+          return;
+        }
+
+        persistPlannerSideMessage('user', content);
+        const replyLower = content.toLowerCase();
+        const replyDate = extractDateValue(content);
+        const replyTimes = extractTimeWindow(content);
+        const treatAsTaskDetails =
+          pendingPlanner.kind === 'task' &&
+          !replyDate &&
+          !replyTimes.startTime &&
+          isLikelyTaskDetails(content);
+        const reminderEnabled =
+          /\b(no|without)\b/.test(replyLower)
+            ? false
+            : pendingPlanner.reminderEnabled || /\b(yes|remind|notification|notify)\b/.test(replyLower);
+
+        const resolvedDraft: PlannerCommand = {
+          ...pendingPlanner,
+          title: treatAsTaskDetails ? content.trim() : pendingPlanner.title,
+          date: replyDate || pendingPlanner.date || new Date().toISOString().slice(0, 10),
+          startTime: replyTimes.startTime || pendingPlanner.startTime,
+          endTime:
+            replyTimes.endTime ||
+            pendingPlanner.endTime ||
+            (replyTimes.startTime ? addMinutes(replyTimes.startTime, 30) : undefined),
+          reminderEnabled,
+          reminderAt:
+            reminderEnabled && (replyDate || pendingPlanner.date || new Date().toISOString().slice(0, 10))
+              ? `${replyDate || pendingPlanner.date || new Date().toISOString().slice(0, 10)}T${
+                  replyTimes.startTime || pendingPlanner.startTime || '09:00'
+                }:00`
+              : undefined,
+        };
+
+        if (resolvedDraft.kind === 'calendar' && !resolvedDraft.startTime) {
+          addAssistantMessage(
+            'Got it. Tell me the reminder or event time in AM/PM format, like 6:30 PM or 9:15 AM.',
+            'thinking'
+          );
+          pendingPlannerRef.current = resolvedDraft;
+          return;
+        }
+
+        const plannerResult = finalizePlannerAction(resolvedDraft);
+        addAssistantMessage(plannerResult.message, plannerResult.success ? 'happy' : 'thinking');
+        pendingPlannerRef.current = null;
+        return;
+      }
+
+      if (isReminderOnlyPlannerFollowUp(content)) {
+        persistPlannerSideMessage('user', content);
+        const plannerResult = applyPlannerReminderFollowUp(content);
+        addAssistantMessage(plannerResult.message, plannerResult.success ? 'happy' : 'thinking');
+        pendingPlannerRef.current = null;
+        return;
+      }
+
+      if (isAutomationIntent(content)) {
+        fetch('http://localhost:8000/api/automation/browser/prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: normalizeAutomationPrompt(content),
+            background: true,
+          }),
+        })
+          .then((res) => res.json())
+          .then((payload) => {
+            const messageText =
+              payload?.message ||
+              payload?.detail ||
+              'I tried to run that automation command, but I could not confirm the result.';
+            const noteText = payload?.note ? ` ${payload.note}` : '';
+            addAssistantMessage(`${messageText}${noteText}`.trim(), payload?.success ? 'happy' : 'thinking');
+          })
+          .catch((error) => {
+            console.error('Chat automation failed:', error);
+            addAssistantMessage(
+              'I tried to run that automation command, but the automation service was unavailable.',
+              'thinking'
+            );
+          })
+          .finally(() => {
+            setIsStreaming(false);
+          });
+        return;
+      }
+
+      const plannerIntent = inferPlannerCommand(content);
+      if (plannerIntent) {
+        persistPlannerSideMessage('user', content);
+        if (isPlannerPreparationPrompt(content)) {
+          pendingPlannerRef.current = {
+            ...plannerIntent,
+            title: 'Planner item',
+          };
+          addAssistantMessage(
+            plannerIntent.kind === 'calendar'
+              ? 'Sure — tell me the actual calendar details in your next message, like the event title, date, time, and whether you want a reminder. I will wait instead of saving this setup sentence.'
+              : 'Sure — send me the actual to-do items in your next message, and I will add them properly instead of saving this setup sentence.',
+            'thinking'
+          );
+          return;
+        }
+
+        const needsReminderFollowUp =
+          plannerIntent.mode === 'create' &&
+          !plannerIntent.reminderEnabled &&
+          !plannerIntent.startTime &&
+          !plannerIntent.reminderAt;
+        const needsCalendarTime =
+          plannerIntent.kind === 'calendar' &&
+          plannerIntent.mode === 'create' &&
+          (!plannerIntent.startTime || !plannerIntent.date);
+
+        if (needsReminderFollowUp || needsCalendarTime) {
+          pendingPlannerRef.current = plannerIntent;
+          addAssistantMessage(
+            plannerIntent.kind === 'calendar'
+              ? `I can add "${resolvePlannerTitle(plannerIntent)}" to your calendar. Do you want a reminder too? If yes, tell me the date and time in AM/PM, like tomorrow 6:30 PM.`
+              : `I can add "${resolvePlannerTitle(plannerIntent)}" to your to-do list. Do you want a reminder too? If yes, tell me the date and time in AM/PM, like today 8:45 PM.`,
+            'thinking'
+          );
+          return;
+        }
+
+        const plannerResult = finalizePlannerAction({
+          ...plannerIntent,
+          title: resolvePlannerTitle(plannerIntent),
+          date: plannerIntent.date || new Date().toISOString().slice(0, 10),
+          endTime:
+            plannerIntent.kind === 'calendar'
+              ? plannerIntent.endTime || addMinutes(plannerIntent.startTime || '09:00', 30)
+              : plannerIntent.endTime,
+          reminderAt:
+            plannerIntent.reminderEnabled && (plannerIntent.date || new Date().toISOString().slice(0, 10))
+              ? `${plannerIntent.date || new Date().toISOString().slice(0, 10)}T${
+                  plannerIntent.startTime || '09:00'
+                }:00`
+              : undefined,
+        });
+        addAssistantMessage(plannerResult.message, plannerResult.success ? 'happy' : 'thinking');
+        return;
+      }
 
       fetch('http://localhost:8000/api/chat', {
         method: 'POST',
@@ -360,12 +606,39 @@ export default function ChatThread({
           );
         });
     },
-    [simulateStreaming]
+    [addAssistantMessage, messages, simulateStreaming]
   );
 
   const handleShare = () => {
     navigator.clipboard.writeText('https://akansha.ai/share/conv-abc123');
     toast.success('Shareable link copied to clipboard');
+  };
+
+  const handleDeleteConversation = async () => {
+    const confirmed = window.confirm('Delete this conversation from chat history?');
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/chat/session/${encodeURIComponent(sessionId)}`,
+        { method: 'DELETE' }
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || 'Could not delete this conversation.');
+      }
+
+      deleteSessionTitle(sessionId);
+      setMessages([]);
+      setStreamingContent('');
+      setIsStreaming(false);
+      window.dispatchEvent(new CustomEvent('akansha-history-updated'));
+      window.dispatchEvent(new CustomEvent('akansha-new-chat'));
+      toast.success('Conversation deleted');
+    } catch (error) {
+      console.error('Failed to delete conversation:', error);
+      toast.error(error instanceof Error ? error.message : 'Could not delete this conversation.');
+    }
   };
 
   const totalTokens = Math.floor(messages.reduce((acc, msg) => acc + msg.content.length, 0) / 4);
@@ -427,6 +700,10 @@ export default function ChatThread({
                       key={key}
                       onClick={() => {
                         setMoreMenuOpen(false);
+                        if (key === 'menu-delete') {
+                          void handleDeleteConversation();
+                          return;
+                        }
                         toast.success(`${label} action triggered`);
                       }}
                       className={`flex items-center gap-2 w-full px-3 py-2 text-sm transition-colors ${

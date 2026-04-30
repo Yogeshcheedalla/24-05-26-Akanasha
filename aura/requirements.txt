@@ -10,3 +10,4 @@ pymupdf
 python-pptx
 pillow
 edge-tts
+win10toast
