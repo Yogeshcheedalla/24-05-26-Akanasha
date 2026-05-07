@@ -404,6 +404,7 @@ export default function ChatThread({
       };
 
       const resolvePlannerTitle = (draft: PlannerCommand) => {
+        if (draft.mode === 'delete') return draft.title;
         if (!isWeakPlannerTitle(draft.title)) return draft.title;
 
         const previousUserMessage = [...messages]

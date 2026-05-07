@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import subprocess
 import tempfile
+import sys
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,6 +44,7 @@ from .database import (
     InboxMessage,
     UserProfile,
     IntegrationConnection,
+    SpeakerProfile,
 )
 from .ai_engine import generate_chat_stream, analyze_intent_and_memory
 from .automation import execute_desktop_command
@@ -98,6 +100,8 @@ class ProfileUpdateRequest(BaseModel):
     avatar_style: str | None = None
     background_listening: bool | None = None
     interrupt_enabled: bool | None = None
+    username: str | None = None
+    password: str | None = None
 
 
 class ReminderRequest(BaseModel):
@@ -163,6 +167,13 @@ class BrowserAutomationPromptRequest(BaseModel):
     background: bool = True
 
 
+class SpeakerProfileRequest(BaseModel):
+    display_name: str
+    relationship_to_owner: str | None = None
+    access_level: str | None = None
+    notes: str | None = None
+
+
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/google/callback")
@@ -216,7 +227,61 @@ def serialize_profile(profile: UserProfile) -> dict[str, Any]:
         "interrupt_enabled": profile.interrupt_enabled,
         "google_connected": profile.google_connected,
         "google_email": profile.google_email,
+        "username": profile.username,
     }
+
+
+def serialize_speaker_profile(profile: SpeakerProfile) -> dict[str, Any]:
+    return {
+        "id": profile.id,
+        "display_name": profile.display_name,
+        "relationship_to_owner": profile.relationship_to_owner,
+        "access_level": profile.access_level,
+        "notes": profile.notes,
+        "last_intro_text": profile.last_intro_text,
+        "timestamp": profile.timestamp.isoformat() if profile.timestamp else None,
+    }
+
+
+def _speaker_access_level(relationship: str | None) -> str:
+    normalized = (relationship or "").strip().lower()
+    if normalized in {"owner", "self", "me", "myself"}:
+        return "owner"
+    if normalized in {"mother", "mom", "mummy", "amma", "father", "dad", "nanna", "sister", "brother", "wife", "husband", "friend"}:
+        return "trusted"
+    return "guest"
+
+
+def _schedule_automation_plan(run_at_iso: str, plan: dict[str, Any], original_prompt: str) -> str:
+    payload_dir = Path(tempfile.gettempdir()) / "akansha-automation"
+    payload_dir.mkdir(parents=True, exist_ok=True)
+    payload_path = payload_dir / f"automation-{secrets.token_hex(8)}.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "run_at": run_at_iso,
+                "plan": plan,
+                "prompt": original_prompt,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+
+    subprocess.Popen(
+        [sys.executable, "-m", "backend.scheduled_automation_runner", str(payload_path)],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+    return str(payload_path)
 
 
 def google_configured() -> bool:
@@ -798,15 +863,108 @@ BROWSER_AUTOMATION_ACTIONS: list[dict[str, str]] = [
 ]
 
 DESKTOP_APP_ALIASES: dict[str, list[str]] = {
-    "notepad": ["notepad"],
+    "notepad": ["notepad", "notepad app", "notepad desktop", "notepad desktop app"],
     "calculator": ["calculator", "calc"],
     "file explorer": ["file explorer", "explorer"],
     "vscode": ["vscode", "vs code", "visual studio code", "code editor"],
-    "chrome": ["chrome", "google chrome"],
-    "brave": ["brave", "brave browser"],
-    "edge": ["edge", "microsoft edge"],
+    "chrome": [
+        "chrome",
+        "google chrome",
+        "chrome browser",
+        "google chrome browser",
+        "chrome app",
+        "google chrome app",
+        "chrome desktop",
+        "google chrome desktop",
+    ],
+    "brave": [
+        "brave",
+        "brave browser",
+        "brave app",
+        "brave desktop",
+    ],
+    "edge": [
+        "edge",
+        "microsoftedge",
+        "microsoft edge",
+        "edge browser",
+        "microsoft edge browser",
+        "edge app",
+        "microsoft edge app",
+        "edge desktop",
+        "microsoft edge desktop",
+    ],
     "command prompt": ["command prompt", "cmd"],
     "powershell": ["powershell"],
+    "whatsapp": [
+        "whatsapp",
+        "whats app",
+        "whatsup",
+        "watsup",
+        "whatsap",
+        "whatsapp desktop",
+        "whats app desktop",
+        "whatsup desktop",
+        "whatsapp app",
+        "whatsapp desktop app",
+    ],
+    "telegram": ["telegram", "telegram app", "telegram desktop", "telegram desktop app"],
+    "discord": ["discord", "discord app", "discord desktop", "discord desktop app"],
+    "word": ["word", "microsoft word", "ms word"],
+    "excel": ["excel", "microsoft excel", "ms excel"],
+    "powerpoint": ["powerpoint", "power point", "microsoft powerpoint", "ms powerpoint"],
+    "settings": ["settings", "windows settings"],
+    "terminal": ["terminal", "windows terminal"],
+    "control panel": ["control panel"],
+}
+
+DUAL_MODE_APP_TARGETS: dict[str, dict[str, str | None]] = {
+    "whatsapp": {
+        "label": "WhatsApp",
+        "desktop_app": "whatsapp",
+        "web_url": "https://web.whatsapp.com",
+    },
+    "telegram": {
+        "label": "Telegram",
+        "desktop_app": "telegram",
+        "web_url": "https://web.telegram.org",
+    },
+    "discord": {
+        "label": "Discord",
+        "desktop_app": "discord",
+        "web_url": "https://discord.com/app",
+    },
+    "instagram": {
+        "label": "Instagram",
+        "desktop_app": None,
+        "web_url": "https://www.instagram.com",
+    },
+    "twitter": {
+        "label": "X / Twitter",
+        "desktop_app": None,
+        "web_url": "https://x.com",
+    },
+}
+
+DESKTOP_ONLY_APP_TARGETS: set[str] = {
+    "notepad",
+    "calculator",
+    "file explorer",
+    "vscode",
+    "command prompt",
+    "powershell",
+    "word",
+    "excel",
+    "powerpoint",
+    "settings",
+    "terminal",
+    "control panel",
+}
+
+BROWSER_APP_LABELS: dict[str, str] = {
+    "chrome": "Google Chrome",
+    "brave": "Brave",
+    "edge": "Microsoft Edge",
 }
 
 SPECIAL_FOLDERS: dict[str, str] = {
@@ -877,6 +1035,72 @@ KNOWN_LOGIN_URLS: dict[str, dict[str, Any]] = {
     },
 }
 
+AUTOMATION_OPENABLE_TARGETS = (
+    "notepad|calculator|calc|file explorer|explorer|vscode|visual studio code|chrome|brave|edge|"
+    "microsoft edge|whatsapp|telegram|discord|word|excel|powerpoint|settings|terminal|control panel|"
+    "youtube|google|codechef|linkedin|instagram|twitter|x"
+)
+
+
+def normalize_browser_automation_prompt(prompt: str) -> str:
+    normalized = " ".join(prompt.split())
+    desktop_slash = re.match(r"^/desktop\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if desktop_slash:
+        target = re.sub(r"^\s*open\s+", "", desktop_slash.group(1), flags=re.IGNORECASE).strip()
+        normalized = f"open {target} in the desktop app"
+
+    website_slash = re.match(r"^/(?:web|website)\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if website_slash:
+        target = re.sub(r"^\s*open\s+", "", website_slash.group(1), flags=re.IGNORECASE).strip()
+        normalized = f"open {target} in the web browser"
+
+    desktop_prefix = re.match(r"^(?:desktop|desktop app|desktop application)\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if desktop_prefix:
+        target = re.sub(r"^\s*open\s+", "", desktop_prefix.group(1), flags=re.IGNORECASE).strip()
+        normalized = f"open {target} in the desktop app"
+
+    website_prefix = re.match(r"^(?:web|website|browser)\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if website_prefix:
+        target = re.sub(r"^\s*open\s+", "", website_prefix.group(1), flags=re.IGNORECASE).strip()
+        normalized = f"open {target} in the web browser"
+
+    normalized = re.sub(r"\bweb\s+site\b", "website", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bwebsite version\b", "website", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bweb version\b", "website", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bdesktop version\b", "desktop app", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bdesktop client\b", "desktop app", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bweb client\b", "website", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bin\s+website\b", "in the web browser", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bon\s+website\b", "in the web browser", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bin\s+web\b", "in the web browser", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bin\s+desktop\b", "in the desktop app", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bwhats?\s*up\b", "whatsapp", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bwats?\s*up\b", "whatsapp", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bwhats?\s*ap+p?\b", "whatsapp", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bwhats\s+app\b", "whatsapp", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bwhastapp\b", "whatsapp", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bmicrosoftedge\b", "microsoft edge", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bmicro\s*soft edge\b", "microsoft edge", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bms edge\b", "microsoft edge", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bedge browser\b", "microsoft edge", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bmicrosoft edge browser\b", "microsoft edge", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bedge app\b", "microsoft edge", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bmicrosoft edge app\b", "microsoft edge", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bchrome browser\b", "google chrome", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bchrome app\b", "google chrome", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bgoogle chrome app\b", "google chrome", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(
+        rf"\bop(?:en)?\s*({AUTOMATION_OPENABLE_TARGETS})\b",
+        r"open \1",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\bdesktop\s+open\b", "open", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\byoutub\b", "youtube", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bcaland(ar|er)?\b", "calendar", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
 
 def extract_first_url_or_domain(prompt: str) -> str | None:
     url_match = re.search(r"(https?://[^\s]+)", prompt, flags=re.IGNORECASE)
@@ -943,6 +1167,8 @@ def normalize_domain(url_or_domain: str | None) -> str | None:
 
 def detect_known_site(prompt: str) -> str | None:
     lowered = prompt.lower()
+    if re.search(r"\bgoogle\b", lowered) and not re.search(r"\bgoogle chrome\b", lowered):
+        return "google.com"
     if "codechef" in lowered:
         return "codechef.com"
     if "linkedin" in lowered:
@@ -960,11 +1186,346 @@ def detect_known_site(prompt: str) -> str | None:
     return None
 
 
+def humanize_desktop_target(app_name: str | None) -> str:
+    if not app_name:
+        return "the requested app"
+    friendly_names = {
+        "notepad": "Notepad",
+        "calculator": "Calculator",
+        "file explorer": "File Explorer",
+        "vscode": "Visual Studio Code",
+        "command prompt": "Command Prompt",
+        "powershell": "PowerShell",
+        "whatsapp": "WhatsApp",
+        "telegram": "Telegram",
+        "discord": "Discord",
+        "word": "Microsoft Word",
+        "excel": "Microsoft Excel",
+        "powerpoint": "Microsoft PowerPoint",
+        "settings": "Windows Settings",
+        "terminal": "Windows Terminal",
+        "control panel": "Control Panel",
+        "chrome": "Google Chrome",
+        "brave": "Brave",
+        "edge": "Microsoft Edge",
+    }
+    return friendly_names.get(app_name, app_name.title())
+
+
 def detect_desktop_app(prompt: str) -> str | None:
     lowered = prompt.lower()
     for app_name, aliases in DESKTOP_APP_ALIASES.items():
         if any(re.search(rf"\b{re.escape(alias)}\b", lowered) for alias in aliases):
             return app_name
+    return None
+
+
+def detect_dual_mode_app(prompt: str) -> str | None:
+    lowered = prompt.lower()
+    if re.search(r"\b(?:whats\s*app|whatsup|watsup|whatsap)\b", lowered):
+        return "whatsapp"
+    if re.search(r"\btelegram\b", lowered):
+        return "telegram"
+    if re.search(r"\bdiscord\b", lowered):
+        return "discord"
+    if re.search(r"\binstagram\b", lowered):
+        return "instagram"
+    if re.search(r"\b(?:twitter|x)\b", lowered):
+        return "twitter"
+    return None
+
+
+def has_desktop_app_context(prompt: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(desktop|desktop app|desktop application|desktop mode|desktop only|desktop version|windows app|installed app|local app|native app|pc app|desktop client|desktop software|desktop program|open the app|open on desktop|on desktop|in the desktop|on my laptop|on my pc|in desktop|desktop side)\b",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def has_web_app_context(prompt: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(web|web app|website|website mode|website only|browser|browser version|site|online|tab|web version|website version|open in chrome|open in brave|open in edge|in the browser|open on the website|on the website|web page|web side)\b",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def has_explicit_website_context(prompt: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(website|web\s*site|site|online|web app|web version|website version|web browser|browser version|in the browser|on the web|website only|web side|browser side)\b",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def extract_generic_desktop_app_request(prompt: str) -> str | None:
+    patterns = [
+        r"\bdesktop\s+(?:open|launch|start|use)\s+(.+?)(?:\s+app)?\b",
+        r"\bdesktop\s+app\s+(?:open|launch|start|use)\s+(.+?)(?:\s+app)?\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+in\s+the\s+desktop\s+app\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+in\s+desktop\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+as\s+the\s+desktop\s+app\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+desktop\s+app\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+desktop\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, prompt, flags=re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip(" .\"'")
+            if candidate:
+                return candidate
+    return None
+
+
+def extract_generic_website_request(prompt: str) -> str | None:
+    patterns = [
+        r"\b(?:website|web|browser)\s+(?:open|launch|start|use)\s+(.+)\b",
+        r"\b(?:website|web|browser|site)\s+(?:open|launch|start|use)\s+(.+)\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+in\s+the\s+web(?:\s+browser)?\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+in\s+the\s+website\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+on\s+the\s+website\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+website\s+only\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+website\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+web\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, prompt, flags=re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip(" .\"'")
+            if candidate:
+                return candidate
+    return None
+
+
+def _clean_contact_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip().strip("\"'").strip(" .,:;")
+    cleaned = re.sub(r"^(?:the\s+contact\s+|contact\s+|chat\s+with\s+|to\s+)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b(?:on|in|through|via)\s+whatsapp(?:\s+desktop|\s+app|\s+website|\s+web)?\b",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\bwhatsapp(?:\s+desktop|\s+app|\s+website|\s+web)?\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:desktop|website|web)\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.split(
+        r"\b(?:case\s+sensitive|case\s+sensitivity|ignore\s+case|no\s+worries|spelling\s+mistake|spelling\s+mistakes|typo|typos)\b",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    normalized_lower = cleaned.lower()
+    relationship_aliases = {
+        "mumy": "mummy",
+        "mummi": "mummy",
+        "mummie": "mummy",
+        "mumyy": "mummy",
+        "mommy": "mummy",
+        "mom": "mummy",
+        "mother": "mummy",
+        "ammah": "amma",
+        "ammaa": "amma",
+        "ammah": "amma",
+        "dad": "daddy",
+        "dady": "daddy",
+        "dadddy": "daddy",
+        "father": "daddy",
+        "pappa": "papa",
+        "nannaa": "nanna",
+    }
+    cleaned = relationship_aliases.get(normalized_lower, cleaned)
+    return cleaned or None
+
+
+def _clean_message_body(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip().strip("\"'")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned or None
+
+
+def _strip_schedule_phrases(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value
+    schedule_patterns = [
+        r"\b(?:today|tomorrow)\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+        r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*(?:today|tomorrow)?\b",
+        r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*(?:today|tomorrow)?\b",
+    ]
+    for pattern in schedule_patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:with|and)\s+(?:a\s+)?remind(?:er| me)\b", "", cleaned, flags=re.IGNORECASE)
+    return _clean_message_body(cleaned)
+
+
+def extract_prompt_schedule(prompt: str) -> tuple[str | None, str]:
+    lowered = prompt.lower()
+    now = datetime.now().astimezone()
+    run_at: datetime | None = None
+
+    match = re.search(
+        r"\b(?:(today|tomorrow)\s+)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
+        lowered,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        day_hint, hour_text, minute_text, period = match.groups()
+        hour = int(hour_text)
+        minute = int(minute_text or "0")
+        if hour == 12:
+            hour = 0
+        if period.lower() == "pm":
+            hour += 12
+        target_date = now.date()
+        if day_hint == "tomorrow":
+            target_date = target_date + timedelta(days=1)
+        candidate = datetime.combine(target_date, datetime.min.time(), tzinfo=now.tzinfo).replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0,
+        )
+        if day_hint != "tomorrow" and candidate <= now:
+            candidate = candidate + timedelta(days=1)
+        run_at = candidate
+        prompt = re.sub(match.group(0), "", prompt, flags=re.IGNORECASE).strip()
+        prompt = re.sub(r"\s{2,}", " ", prompt)
+
+    return run_at.isoformat() if run_at else None, prompt
+
+
+def extract_send_message_details(prompt: str) -> tuple[str | None, str | None]:
+    normalized = re.sub(r"\s+", " ", prompt.strip())
+    normalized = re.sub(r"\bwhats?\s*up\b", "whatsapp", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bwats?\s*up\b", "whatsapp", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bwhats?\s*ap+p?\b", "whatsapp", normalized, flags=re.IGNORECASE)
+
+    explicit_message_patterns: list[tuple[str, str, str]] = [
+        (
+            r"\bopen\s+whatsapp(?:\s+desktop|\s+app)?\s+and\s+send\s+(?P<message>.+?)\s+(?:message\s+)?to\s+(?P<contact>[^,.;\n]+)",
+            "message",
+            "contact",
+        ),
+        (
+            r"\bsend\s+(?P<message>.+?)\s+message\s+to\s+(?P<contact>[^,.;\n]+)",
+            "message",
+            "contact",
+        ),
+        (
+            r"\bsend\s+(?P<message>.+?)\s+to\s+(?P<contact>[^,.;\n]+)",
+            "message",
+            "contact",
+        ),
+        (
+            r"\bmessage\s+(?P<contact>[^,.;\n]+?)\s+(?:saying|with|message|text)\s+(?P<message>.+)",
+            "message",
+            "contact",
+        ),
+        (
+            r"\bsend\s+to\s+(?P<contact>[^,.;\n]+?)\s+(?:saying|with|message|text)\s+(?P<message>.+)",
+            "message",
+            "contact",
+        ),
+        (
+            r"\bsend\s+(?:a\s+message\s+)?to\s+(?P<contact>[^,.;\n]+?)\s+(?:saying|with|message|text)\s+(?P<message>.+)",
+            "message",
+            "contact",
+        ),
+    ]
+
+    for pattern, message_key, contact_key in explicit_message_patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if not match:
+            continue
+        message = _strip_schedule_phrases(match.group(message_key))
+        contact = _clean_contact_name(_strip_schedule_phrases(match.group(contact_key)))
+        if message and message.lower() in {"a", "message", "the message"} and contact:
+            return None, contact
+        if message and contact:
+            return message, contact
+
+    contact_only_patterns = [
+        r"\bsend\s+(?:a\s+message|message)\s+to\s+(?P<contact>[^,;\n]+?)(?:[.?!]?)$",
+        r"\bopen\s+whatsapp(?:\s+desktop|\s+app)?\s+and\s+send\s+(?:a\s+message|message)\s+to\s+(?P<contact>[^,;\n]+?)(?:[.?!]?)$",
+        r"\bopen\s+whatsapp(?:\s+desktop|\s+app)?\s+and\s+send\s+(?P<contact>[^,;\n]+?)(?:[.?!]?)$",
+        r"\bopen\s+whatsapp(?:\s+desktop|\s+app)?\s+and\s+message\s+(?P<contact>[^,;\n]+?)(?:[.?!]?)$",
+    ]
+    for pattern in contact_only_patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            contact = _clean_contact_name(match.group("contact"))
+            if contact:
+                return None, contact
+
+    patterns: list[tuple[str, str, str]] = [
+        (
+            r"\bsend\s+(?P<message>.+?)\s+(?:message\s+)?to\s+(?P<contact>[^,.;\n]+)",
+            "message",
+            "contact",
+        ),
+    ]
+
+    for pattern, message_key, contact_key in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if not match:
+            continue
+        message = _strip_schedule_phrases(match.group(message_key))
+        contact = _clean_contact_name(_strip_schedule_phrases(match.group(contact_key)))
+        if message and message.lower() in {"a", "message", "the message"} and contact:
+            return None, contact
+        if message or contact:
+            return message, contact
+
+    contact_only_match = re.search(
+        r"\b(?:send|message)\s+(?:a\s+message\s+)?to\s+(?P<contact>[^,.;\n]+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if contact_only_match:
+        return None, _clean_contact_name(_strip_schedule_phrases(contact_only_match.group("contact")))
+
+    open_and_send_match = re.search(
+        r"\bopen\s+(?:the\s+)?whatsapp(?:\s+desktop|\s+app)?\s+and\s+send\s+(?P<message>.+?)\s+to\s+(?P<contact>[^,.;\n]+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if open_and_send_match:
+        return (
+            _strip_schedule_phrases(open_and_send_match.group("message")),
+            _clean_contact_name(_strip_schedule_phrases(open_and_send_match.group("contact"))),
+        )
+
+    return None, None
+
+
+def extract_open_target(prompt: str) -> str | None:
+    patterns = [
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+(?:in|on)\s+the\s+(?:desktop app|desktop|web browser|browser|website)\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)\s+(?:desktop app|desktop|website|web browser|browser)\b",
+        r"\b(?:open|launch|start|use)\s+(.+?)(?:\s+and\s+.+)?$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, prompt, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = match.group(1).strip(" .\"'")
+        if candidate:
+            candidate = re.sub(r"\b(the|my)\b", "", candidate, flags=re.IGNORECASE)
+            candidate = re.sub(r"\s+", " ", candidate).strip()
+            if candidate:
+                return candidate
     return None
 
 
@@ -1030,7 +1591,7 @@ def is_complex_site_workflow(prompt: str) -> bool:
 
 
 def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
-    normalized = " ".join(prompt.split())
+    normalized = normalize_browser_automation_prompt(prompt)
     lowered = normalized.lower()
     url_or_domain = extract_first_url_or_domain(normalized)
     normalized_domain = normalize_domain(url_or_domain) or detect_known_site(normalized)
@@ -1041,13 +1602,33 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
     email_value = username_value or extract_field_value(normalized, ["email", "username", "user id", "login id"])
     message_value = extract_field_value(normalized, ["message", "text", "reply"])
     desktop_app = detect_desktop_app(normalized)
+    requested_desktop_app = extract_generic_desktop_app_request(normalized)
+    requested_website_target = extract_generic_website_request(normalized)
+    dual_mode_app = detect_dual_mode_app(normalized)
+    desktop_context = has_desktop_app_context(normalized)
+    web_context = has_web_app_context(normalized)
+    explicit_website_context = has_explicit_website_context(normalized)
+    dual_mode_native_app_hint = bool(
+        dual_mode_app
+        and re.search(
+            rf"\b(?:{re.escape(dual_mode_app)}|{re.escape(str(DUAL_MODE_APP_TARGETS.get(dual_mode_app, {}).get('label', dual_mode_app)))})\s+app\b",
+            lowered,
+            flags=re.IGNORECASE,
+        )
+    )
+    if dual_mode_native_app_hint and not explicit_website_context:
+        desktop_context = True
+    browser_app = desktop_app if desktop_app in BROWSER_APP_LABELS else None
+    is_open_request = any(token in lowered for token in ["open", "launch", "start", "use"])
     created_folder_name = extract_create_folder_name(normalized) or "Converted_PPTs"
     shell_command, shell_name = extract_run_command(normalized)
+    send_message_text, send_message_contact = extract_send_message_details(normalized)
+    requested_open_target = extract_open_target(normalized)
     typed_match = re.search(r"\b(?:type|write|send)\b\s+(.+)", normalized, flags=re.IGNORECASE)
     typed_instruction = None
     if typed_match:
         typed_instruction = re.split(
-            r"\b(?:in the active field|into the active field|in the field|into the field)\b",
+            r"\b(?:to the active field|in the active field|into the active field|to the field|in the field|into the field)\b",
             typed_match.group(1),
             maxsplit=1,
             flags=re.IGNORECASE,
@@ -1187,17 +1768,312 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
         summary = "Maximizing the current desktop window."
         return {"summary": summary, "steps": steps}
 
+    if is_open_request and requested_website_target:
+        requested_target_app = detect_desktop_app(requested_website_target)
+        requested_target_dual_mode = detect_dual_mode_app(requested_website_target)
+        requested_target_domain = normalize_domain(extract_first_url_or_domain(requested_website_target)) or detect_known_site(
+            requested_website_target
+        )
+
+        if requested_target_app in DESKTOP_ONLY_APP_TARGETS:
+            label = humanize_desktop_target(requested_target_app)
+            return {
+                "summary": (
+                    f"{label} is a Windows desktop app, not a website. "
+                    f"Say '/desktop open {requested_target_app}' or 'open {requested_target_app} desktop app'."
+                ),
+                "steps": [],
+                "needs_clarification": True,
+            }
+
+        if requested_target_app in BROWSER_APP_LABELS:
+            browser_label = BROWSER_APP_LABELS[requested_target_app]
+            return {
+                "summary": (
+                    f"{browser_label} is a desktop browser app, not a website. "
+                    f"Say '/desktop open {requested_target_app}' to launch the browser, or '/website open google.com' to open a real website."
+                ),
+                "steps": [],
+                "needs_clarification": True,
+            }
+
+        if requested_target_dual_mode:
+            dual_mode_config = DUAL_MODE_APP_TARGETS[requested_target_dual_mode]
+            label = str(dual_mode_config["label"])
+            web_target = str(dual_mode_config["web_url"])
+            if requested_target_dual_mode == "whatsapp" and send_message_contact:
+                return {
+                    "summary": (
+                        "WhatsApp message sending is only supported in the desktop app path in this build. "
+                        "Say '/desktop open whatsapp' or 'open whatsapp desktop and send hi to Amma'."
+                    ),
+                    "steps": [],
+                    "needs_clarification": True,
+                }
+            web_steps = [{"action": "open_url", "target": web_target}]
+            web_summary = f"Opening {label} in the browser."
+            if typed_instruction:
+                web_steps.append({"action": "wait", "payload": {"seconds": 1.8}})
+                web_steps.append({"action": "type_text", "target": typed_instruction})
+                web_summary = f"Opening {label} in the browser and typing the requested text."
+            elif message_value:
+                web_steps.append({"action": "wait", "payload": {"seconds": 1.8}})
+                web_steps.append({"action": "type_text", "target": message_value})
+                web_summary = f"Opening {label} in the browser and typing the provided message."
+            return {"summary": web_summary, "steps": web_steps}
+
+        if requested_target_domain:
+            target_url = extract_first_url_or_domain(requested_website_target) or f"https://{requested_target_domain}"
+            steps.append({"action": "open_url", "target": target_url})
+            summary = f"Opening {requested_target_domain} in the default browser."
+            return {"summary": summary, "steps": steps}
+
+    if is_open_request and requested_open_target and web_context and not normalized_domain:
+        requested_target_app = detect_desktop_app(requested_open_target)
+        requested_target_dual_mode = detect_dual_mode_app(requested_open_target)
+        if requested_target_app in DESKTOP_ONLY_APP_TARGETS:
+            label = humanize_desktop_target(requested_target_app)
+            return {
+                "summary": (
+                    f"{label} is a Windows desktop app, not a website. "
+                    f"Say '/desktop open {requested_target_app}' or 'open {requested_target_app} desktop app'."
+                ),
+                "steps": [],
+                "needs_clarification": True,
+            }
+        if requested_target_app in BROWSER_APP_LABELS:
+            browser_label = BROWSER_APP_LABELS[requested_target_app]
+            return {
+                "summary": (
+                    f"{browser_label} is a browser application, not a normal website. "
+                    f"Say '/desktop open {requested_target_app}' to launch the app, or '/website open google.com' for a real site."
+                ),
+                "steps": [],
+                "needs_clarification": True,
+            }
+        if requested_target_dual_mode:
+            label = str(DUAL_MODE_APP_TARGETS[requested_target_dual_mode]["label"])
+            return {
+                "summary": (
+                    f"{label} can open either as the desktop app or on the web. "
+                    f"Say '/desktop open {label}' or '/website open {label}' so I choose the right one."
+                ),
+                "steps": [],
+                "needs_clarification": True,
+            }
+
+    if is_open_request and desktop_app in DESKTOP_ONLY_APP_TARGETS and web_context:
+        label = humanize_desktop_target(desktop_app)
+        return {
+            "summary": (
+                f"{label} is a Windows desktop app, not a website. "
+                f"Say '/desktop open {desktop_app}' or 'open {desktop_app} desktop app'."
+            ),
+            "steps": [],
+            "needs_clarification": True,
+        }
+
+    if is_open_request and browser_app and normalized_domain:
+        browser_label = BROWSER_APP_LABELS[browser_app]
+        target_url = url_or_domain or f"https://{normalized_domain}"
+        steps.append({"action": "open_app_url", "target": browser_app, "payload": {"url": target_url}})
+        summary = f"Opening {normalized_domain} in {browser_label}."
+        return {"summary": summary, "steps": steps}
+
+    if is_open_request and browser_app and explicit_website_context and not normalized_domain and not search_phrase:
+        browser_label = BROWSER_APP_LABELS[browser_app]
+        return {
+            "summary": (
+                f"{browser_label} is a desktop browser app, not a website. "
+                f"Say '/desktop open {browser_app}' to launch the app, or '/website open google.com' for a real website. "
+                f"You can also say 'open google in {browser_app}' to open a website inside that browser."
+            ),
+            "steps": [],
+            "needs_clarification": True,
+        }
+
+    if is_open_request and browser_app and desktop_context and not normalized_domain:
+        browser_label = BROWSER_APP_LABELS[browser_app]
+        steps.append({"action": "open_app", "target": browser_app})
+        summary = f"Opening {browser_label} as the desktop browser app."
+        return {"summary": summary, "steps": steps}
+
+    if is_open_request and browser_app and not normalized_domain and not web_context:
+        browser_label = BROWSER_APP_LABELS[browser_app]
+        steps.append({"action": "open_app", "target": browser_app})
+        summary = f"Opening {browser_label} as the desktop browser app."
+        return {"summary": summary, "steps": steps}
+
+    if dual_mode_app and any(token in lowered for token in ["open", "launch", "start", "use"]):
+        dual_mode_config = DUAL_MODE_APP_TARGETS[dual_mode_app]
+        label = str(dual_mode_config["label"])
+        desktop_target = dual_mode_config["desktop_app"]
+        web_target = str(dual_mode_config["web_url"])
+
+        if desktop_context and web_context:
+            return {
+                "summary": (
+                    f"I can open {label} as the desktop app or in the browser, but your prompt mentions both. "
+                    f"Please say either '/desktop open {label}' or '/website open {label}'."
+                ),
+                "steps": [],
+                "needs_clarification": True,
+            }
+
+        if desktop_context:
+            if desktop_target:
+                desktop_steps = [{"action": "open_app", "target": desktop_target}]
+                desktop_summary = f"Opening the {label} desktop app."
+                if dual_mode_app == "whatsapp" and send_message_contact:
+                    desktop_steps.append({"action": "wait", "payload": {"seconds": 2.2}})
+                    desktop_steps.append(
+                        {
+                            "action": "whatsapp_send_message",
+                            "payload": {
+                                "contact": send_message_contact,
+                                "message": send_message_text or "",
+                            },
+                        }
+                    )
+                    desktop_summary = (
+                        f"Opening WhatsApp desktop and sending '{send_message_text}' to {send_message_contact}."
+                        if send_message_text
+                        else f"Opening WhatsApp desktop and focusing the chat for {send_message_contact}."
+                    )
+                    return {
+                        "summary": desktop_summary,
+                        "steps": desktop_steps,
+                    }
+                if typed_instruction:
+                    desktop_steps.append({"action": "wait", "payload": {"seconds": 1.4}})
+                    desktop_steps.append({"action": "type_text", "target": typed_instruction})
+                    desktop_summary = f"Opening the {label} desktop app and typing the requested text."
+                elif message_value:
+                    desktop_steps.append({"action": "wait", "payload": {"seconds": 1.4}})
+                    desktop_steps.append({"action": "type_text", "target": message_value})
+                    desktop_summary = f"Opening the {label} desktop app and typing the provided message."
+                return {
+                    "summary": desktop_summary,
+                    "steps": desktop_steps,
+                }
+            return {
+                "summary": (
+                    f"I can open {label} on the web, but this setup does not have a reliable desktop app target for it yet. "
+                    f"Please say '/website open {label}' or tell me the exact installed desktop app name."
+                ),
+                "steps": [],
+                "needs_clarification": True,
+            }
+
+        if web_context:
+            web_steps = [{"action": "open_url", "target": web_target}]
+            web_summary = f"Opening {label} in the browser."
+            if typed_instruction:
+                web_steps.append({"action": "wait", "payload": {"seconds": 1.8}})
+                web_steps.append({"action": "type_text", "target": typed_instruction})
+                web_summary = f"Opening {label} in the browser and typing the requested text."
+            elif message_value:
+                web_steps.append({"action": "wait", "payload": {"seconds": 1.8}})
+                web_steps.append({"action": "type_text", "target": message_value})
+                web_summary = f"Opening {label} in the browser and typing the provided message."
+            return {
+                "summary": web_summary,
+                "steps": web_steps,
+            }
+
+        if not desktop_target:
+            web_steps = [{"action": "open_url", "target": web_target}]
+            web_summary = (
+                f"Opening {label} in the browser because this setup has a web target for it but not a reliable desktop app target."
+            )
+            if typed_instruction:
+                web_steps.append({"action": "wait", "payload": {"seconds": 1.8}})
+                web_steps.append({"action": "type_text", "target": typed_instruction})
+                web_summary = f"Opening {label} in the browser and typing the requested text."
+            elif message_value:
+                web_steps.append({"action": "wait", "payload": {"seconds": 1.8}})
+                web_steps.append({"action": "type_text", "target": message_value})
+                web_summary = f"Opening {label} in the browser and typing the provided message."
+            return {
+                "summary": web_summary,
+                "steps": web_steps,
+            }
+
+        return {
+            "summary": (
+                f"I can open {label} as the desktop app or in the browser. "
+                f"Please say '/desktop open {label}' or '/website open {label}'."
+            ),
+            "steps": [],
+            "needs_clarification": True,
+        }
+
+    if (
+        dual_mode_app == "whatsapp"
+        and send_message_contact
+        and any(token in lowered for token in ["send", "message", "text", "reply"])
+    ):
+        if web_context or explicit_website_context:
+            return {
+                "summary": (
+                    "WhatsApp message sending is only supported in the desktop app path in this build. "
+                    "Say '/desktop open whatsapp' or 'open whatsapp desktop and send hi to Amma'."
+                ),
+                "steps": [],
+                "needs_clarification": True,
+            }
+
+        desktop_steps = [{"action": "open_app", "target": "whatsapp"}, {"action": "wait", "payload": {"seconds": 2.2}}]
+        desktop_steps.append(
+            {
+                "action": "whatsapp_send_message",
+                "payload": {
+                    "contact": send_message_contact,
+                    "message": send_message_text or "",
+                },
+            }
+        )
+        desktop_summary = (
+            f"Opening WhatsApp desktop and sending '{send_message_text}' to {send_message_contact}."
+            if send_message_text
+            else f"Opening WhatsApp desktop and focusing the chat for {send_message_contact}."
+        )
+        return {"summary": desktop_summary, "steps": desktop_steps}
+
+    if is_open_request and normalized_domain and not dual_mode_app and not browser_app:
+        target_url = url_or_domain or f"https://{normalized_domain}"
+        steps.append({"action": "open_url", "target": target_url})
+        summary = f"Opening {normalized_domain} in the default browser."
+        return {"summary": summary, "steps": steps}
+
     if desktop_app and any(token in lowered for token in ["open", "launch", "start"]):
         steps.append({"action": "open_app", "target": desktop_app})
-        summary = f"Opening {desktop_app} on the desktop."
+        summary = f"Opening {humanize_desktop_target(desktop_app)} on the desktop."
+        if desktop_app == "whatsapp" and send_message_contact:
+            steps.append({"action": "wait", "payload": {"seconds": 2.2}})
+            steps.append(
+                {
+                    "action": "whatsapp_send_message",
+                    "payload": {
+                        "contact": send_message_contact,
+                        "message": send_message_text or "",
+                    },
+                }
+            )
+            summary = (
+                f"Opening WhatsApp and sending '{send_message_text}' to {send_message_contact}."
+                if send_message_text
+                else f"Opening WhatsApp and focusing the chat for {send_message_contact}."
+            )
+            return {"summary": summary, "steps": steps}
         if typed_instruction:
             steps.append({"action": "wait", "payload": {"seconds": 1.4}})
             steps.append({"action": "type_text", "target": typed_instruction})
-            summary = f"Opening {desktop_app} and typing the requested text."
+            summary = f"Opening {humanize_desktop_target(desktop_app)} and typing the requested text."
         elif message_value:
             steps.append({"action": "wait", "payload": {"seconds": 1.4}})
             steps.append({"action": "type_text", "target": message_value})
-            summary = f"Opening {desktop_app} and typing the provided message."
+            summary = f"Opening {humanize_desktop_target(desktop_app)} and typing the provided message."
         elif desktop_app == "calculator":
             operation_match = re.search(r"(?:do|calculate|compute)\s+([0-9+\-*/().\s]+)", normalized, flags=re.IGNORECASE)
             if operation_match:
@@ -1207,6 +2083,37 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
                 steps.append({"action": "wait", "payload": {"seconds": 0.4}})
                 steps.append({"action": "type_text", "target": "="})
                 summary = f"Opening calculator and entering {expression}."
+        return {"summary": summary, "steps": steps}
+
+    if requested_desktop_app and desktop_context and any(token in lowered for token in ["open", "launch", "start", "use"]):
+        steps.append({"action": "open_app", "target": requested_desktop_app})
+        summary = f"Opening {humanize_desktop_target(requested_desktop_app)} on the desktop."
+        requested_desktop_dual_mode = detect_dual_mode_app(requested_desktop_app)
+        if requested_desktop_dual_mode == "whatsapp" and send_message_contact:
+            steps.append({"action": "wait", "payload": {"seconds": 2.2}})
+            steps.append(
+                {
+                    "action": "whatsapp_send_message",
+                    "payload": {
+                        "contact": send_message_contact,
+                        "message": send_message_text or "",
+                    },
+                }
+            )
+            summary = (
+                f"Opening WhatsApp desktop and sending '{send_message_text}' to {send_message_contact}."
+                if send_message_text
+                else f"Opening WhatsApp desktop and focusing the chat for {send_message_contact}."
+            )
+            return {"summary": summary, "steps": steps}
+        if typed_instruction:
+            steps.append({"action": "wait", "payload": {"seconds": 1.4}})
+            steps.append({"action": "type_text", "target": typed_instruction})
+            summary = f"Opening {humanize_desktop_target(requested_desktop_app)} on the desktop and typing the requested text."
+        elif message_value:
+            steps.append({"action": "wait", "payload": {"seconds": 1.4}})
+            steps.append({"action": "type_text", "target": message_value})
+            summary = f"Opening {humanize_desktop_target(requested_desktop_app)} on the desktop and typing the provided message."
         return {"summary": summary, "steps": steps}
 
     if (any(token in lowered for token in ["login", "sign in", "log in"]) or ((email_value or password_value) and normalized_domain)) and normalized_domain:
@@ -1704,6 +2611,101 @@ def suggest_social_replies(message: InboxMessage) -> list[str]:
         "Got it. I will reply with a proper update soon.",
     ]
 
+
+# --- OTP Auth Endpoints ---
+otp_store: dict[str, str] = {}
+
+class OTPRequest(BaseModel):
+    email: str
+
+class OTPVerifyRequest(BaseModel):
+    email: str
+    code: str
+
+@app.post("/api/auth/send-otp")
+def send_otp(req: OTPRequest):
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    
+    if not req.email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+    
+    code = f"{secrets.randbelow(1000000):06d}"
+    otp_store[req.email.lower()] = code
+    
+    print(f"\n[{datetime.now().isoformat()}] OTP generated for {req.email}: {code}\n")
+    
+    # SMTP Sending Logic
+    smtp_email = os.getenv("SMTP_EMAIL")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+
+    if smtp_email and smtp_password:
+        try:
+            msg = MIMEMultipart()
+            # Note: Gmail SMTP often requires the 'From' address to be exactly the authenticated email
+            msg['From'] = smtp_email
+            msg['To'] = req.email
+            msg['Subject'] = f"{code} is your Akansha Verification Sequence"
+
+            body = f"""
+[ AUTHENTICATION SEQUENCE INITIALIZED ]
+
+Hello Operator,
+
+Your secure identity verification code is: {code}
+
+Please enter this sequence in the Wwise Enchart Autonomous Agent interface to complete your uplink.
+This sequence is valid for a single session and will expire shortly.
+
+If you did not request this sequence, please ignore this transmission.
+
+[ SYSTEM STATUS: SECURE ]
+[ UPLINK ORIGIN: AKANSHA_AI_ENGINE ]
+            """
+            msg.attach(MIMEText(body, 'plain'))
+
+            print(f"Connecting to {smtp_server}:{smtp_port}...")
+            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(smtp_email, smtp_password)
+            server.sendmail(smtp_email, req.email, msg.as_string())
+            server.quit()
+            print(f"Email successfully dispatched to {req.email}")
+        except Exception as e:
+            print(f"CRITICAL ERROR: Failed to dispatch email: {e}")
+    else:
+        print("WARNING: SMTP credentials missing. Email dispatch skipped.")
+    
+    return {"success": True, "message": f"OTP sent to {req.email}"}
+
+@app.post("/api/auth/verify-otp")
+def verify_otp(req: OTPVerifyRequest, db: Session = Depends(get_db)):
+    email = req.email.lower()
+    if email not in otp_store or otp_store[email] != req.code:
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP code.")
+    
+    del otp_store[email]
+    
+    user = db.query(UserProfile).filter(UserProfile.email == email).first()
+    if not user:
+        user = UserProfile(email=email, full_name=email.split('@')[0])
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    
+    return {
+        "success": True, 
+        "token": f"mock-jwt-token-{secrets.token_hex(8)}", 
+        "user": {
+            "email": user.email, 
+            "full_name": user.full_name
+        }
+    }
 
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -2256,6 +3258,34 @@ def get_voice_status():
     }
 
 
+@app.get("/api/voice/speakers")
+def get_voice_speakers(db: Session = Depends(get_db)):
+    speakers = db.query(SpeakerProfile).order_by(SpeakerProfile.timestamp.asc()).all()
+    return {"speakers": [serialize_speaker_profile(speaker) for speaker in speakers]}
+
+
+@app.post("/api/voice/speakers")
+def save_voice_speaker(req: SpeakerProfileRequest, db: Session = Depends(get_db)):
+    display_name = req.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Display name is required.")
+
+    speaker = db.query(SpeakerProfile).filter(SpeakerProfile.display_name.ilike(display_name)).first()
+    if not speaker:
+        speaker = SpeakerProfile(display_name=display_name)
+
+    speaker.relationship_to_owner = req.relationship_to_owner
+    speaker.access_level = req.access_level or _speaker_access_level(req.relationship_to_owner)
+    speaker.notes = req.notes
+    speaker.last_intro_text = (
+        f"{display_name} is {req.relationship_to_owner or 'a new speaker'} for Yogesh."
+    )
+    db.add(speaker)
+    db.commit()
+    db.refresh(speaker)
+    return {"speaker": serialize_speaker_profile(speaker)}
+
+
 @app.post("/api/system/notify")
 def system_notify(request: DesktopNotificationRequest):
     title = request.title.strip()
@@ -2420,20 +3450,33 @@ async def run_browser_automation_prompt(req: BrowserAutomationPromptRequest, db:
     if not prompt:
         raise HTTPException(status_code=400, detail="Automation prompt is empty.")
 
+    inferred_run_at, cleaned_prompt = extract_prompt_schedule(prompt)
+    effective_run_at = req.run_at or inferred_run_at
+    planning_prompt = cleaned_prompt.strip() or prompt
+
     connection = get_or_create_connection(db, BROWSER_AUTOMATION_PROVIDER)
     metadata = get_connection_metadata(connection)
     metadata["permissions"] = {**BROWSER_AUTOMATION_DEFAULTS}
     scheduled_actions = metadata.get("scheduled_actions", [])
 
-    plan = build_browser_prompt_plan(prompt)
+    plan = build_browser_prompt_plan(planning_prompt)
 
-    if req.run_at:
+    if plan.get("needs_clarification"):
+        return {
+            "success": True,
+            "scheduled": False,
+            "message": plan["summary"],
+            "plan": plan,
+            "requires_clarification": True,
+        }
+
+    if effective_run_at:
         scheduled_action = {
             "id": secrets.token_hex(6),
             "action": "freeform-prompt",
             "label": plan["summary"],
-            "target": prompt,
-            "run_at": req.run_at,
+            "target": planning_prompt,
+            "run_at": effective_run_at,
             "background": req.background,
             "status": "scheduled",
             "created_at": datetime.utcnow().isoformat(),
@@ -2445,10 +3488,11 @@ async def run_browser_automation_prompt(req: BrowserAutomationPromptRequest, db:
         connection.metadata_json = json.dumps(metadata)
         db.add(connection)
         db.commit()
+        _schedule_automation_plan(effective_run_at, plan, planning_prompt)
         return {
             "success": True,
             "scheduled": True,
-            "message": f"{plan['summary']} Saved for {req.run_at}.",
+            "message": f"{plan['summary']} Saved for {effective_run_at}.",
             "plan": plan,
         }
 
@@ -2464,10 +3508,19 @@ async def run_browser_automation_prompt(req: BrowserAutomationPromptRequest, db:
             break
 
     final_result = execution_results[-1]["result"] if execution_results else {"success": False, "message": "No steps were executed."}
+    result_message = (final_result.get("message") or "").strip()
+    plan_summary = str(plan.get("summary", "")).strip()
+    if final_result.get("success") and plan_summary:
+        if result_message and result_message.lower() != plan_summary.lower():
+            response_message = f"{plan_summary} {result_message}".strip()
+        else:
+            response_message = plan_summary
+    else:
+        response_message = result_message or plan_summary or "I could not complete that automation request."
     return {
         "success": bool(final_result.get("success")),
         "scheduled": False,
-        "message": final_result.get("message") or plan["summary"],
+        "message": response_message,
         "plan": plan,
         "results": execution_results,
         "note": (

@@ -5,7 +5,7 @@ export const TASKS_STORAGE_KEY = 'akansha-planner-tasks';
 export const EVENTS_STORAGE_KEY = 'akansha-planner-events';
 
 export type PlannerActionKind = 'task' | 'calendar';
-export type PlannerCommandMode = 'create' | 'update';
+export type PlannerCommandMode = 'create' | 'update' | 'delete';
 
 export type PlannerCommand = {
   mode: PlannerCommandMode;
@@ -79,6 +79,7 @@ export function normalizePlannerText(text: string) {
     .replace(/calenadar/gi, 'calendar')
     .replace(/todolist/gi, 'todo list')
     .replace(/to do list/gi, 'todo list')
+    .replace(/do[-\s]?to list/gi, 'todo list')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -185,7 +186,7 @@ export function cleanPlannerTitle(text: string) {
     .replace(/please\s+/gi, '')
     .replace(/\b(can you|could you|would you)\b/gi, '')
     .replace(/\b(?:also\s+)?(?:add\s+)?(?:the\s+)?(?:reminder|remainder|notification|notify me|notify|remind me)\b.*$/gi, '')
-    .replace(/\b(add|create|save|put|schedule|plan|set|edit|update|change|modify|move|reschedule|shift|rename|mark)\b/gi, '')
+    .replace(/\b(add|create|save|put|schedule|plan|set|edit|update|change|modify|move|reschedule|shift|rename|mark|delete|remove|clear|cancel|erase)\b/gi, '')
     .replace(/\b(notify me|notify|notification|remind me|reminder|remainder|custom reminder(?: time)?|set a reminder)\b.*?(\d{1,2})(?::\d{2})?\s*(am|pm)\b/gi, '')
     .replace(/\b(\d{1,2})(?::\d{2})?\s*(am|pm)\b\s*(?:-|to)\s*\b(\d{1,2})(?::\d{2})?\s*(am|pm)\b/gi, '')
     .replace(/\b(today|tomorrow|day after tomorrow)\b/gi, '')
@@ -193,8 +194,10 @@ export function cleanPlannerTitle(text: string) {
     .replace(/\b\d{1,2}(?::\d{2})?\s*(am|pm)\b/gi, '')
     .replace(/(this|it|that)\s+(to|into)\s+(my\s+)?(calendar|todo list|to-?do list|tasks?)/gi, '')
     .replace(/(to|into)\s+(my\s+|the\s+)?(calendar|todo list|to-?do list|tasks?)/gi, '')
+    .replace(/\b(which is|that is)\s+(in|from|inside)\b/gi, '')
+    .replace(/\b(in|from|inside)\s+(my\s+|the\s+)?(calendar|schedule|event|todo list|to-?do list|do-to list|tasks?)\b/gi, '')
     .replace(/\b(remind me|set a reminder|notification|notify me|with reminder|with a reminder)\b/gi, '')
-    .replace(/\b(calendar|schedule|event|todo list|to-?do list|todo|tasks?)\b/gi, '')
+    .replace(/\b(calendar|schedule|event|todo list|to-?do list|do-to list|todo|tasks?)\b/gi, '')
     .replace(/\b(at|for|on)\s+(today|tomorrow|day after tomorrow|\d{4}-\d{2}-\d{2}|(\d{1,2})(?::\d{2})?\s*(am|pm))/gi, '')
     .replace(/\b(also|the|my)\b/gi, '')
     .replace(/\b(to|into|for|at|on)\b\s*$/gi, '')
@@ -261,7 +264,7 @@ export function inferPlannerCommand(text: string): PlannerCommand | null {
     /\badd\b.*\btask\b/.test(lowered);
   const hasPlannerReference = wantsCalendar || wantsTask;
   const hasAction =
-    /\b(add|create|save|put|schedule|plan|edit|update|change|modify|move|reschedule|shift|rename|mark|complete|done)\b/.test(
+    /\b(add|create|save|put|schedule|plan|edit|update|change|modify|move|reschedule|shift|rename|mark|complete|done|delete|remove|clear|cancel|erase)\b/.test(
       lowered
     );
   const followUpReference =
@@ -273,11 +276,13 @@ export function inferPlannerCommand(text: string): PlannerCommand | null {
   if (!hasAction && !followUpReference && !hasReminderIntent) return null;
   if (!hasPlannerReference && !followUpReference && !hasReminderIntent) return null;
 
-  const mode: PlannerCommandMode = /\b(edit|update|change|modify|move|reschedule|shift|rename|mark|complete|done)\b/.test(
-    lowered
-  )
-    ? 'update'
-    : 'create';
+  const mode: PlannerCommandMode = /\b(delete|remove|clear|cancel|erase)\b/.test(lowered)
+    ? 'delete'
+    : /\b(edit|update|change|modify|move|reschedule|shift|rename|mark|complete|done)\b/.test(
+        lowered
+      )
+      ? 'update'
+      : 'create';
 
   const { startTime, endTime } = extractTimeWindow(text);
   const date = extractDateValue(text);
@@ -375,6 +380,20 @@ function findMatchingTask(tasks: PlannerTask[], title: string) {
   return tasks[0];
 }
 
+function findStrictMatchingTask(tasks: PlannerTask[], title: string) {
+  const matchTitle = normalizeMatch(title);
+  if (!matchTitle) return undefined;
+
+  return (
+    tasks.find((item) => normalizeMatch(item.title) === matchTitle) ||
+    tasks.find((item) => normalizeMatch(item.title).includes(matchTitle)) ||
+    tasks.find((item) => {
+      const itemTitle = normalizeMatch(item.title);
+      return Boolean(itemTitle) && matchTitle.includes(itemTitle);
+    })
+  );
+}
+
 function findMatchingEvent(events: PlannerEvent[], title: string) {
   const matchTitle = normalizeMatch(title);
   if (matchTitle) {
@@ -384,6 +403,20 @@ function findMatchingEvent(events: PlannerEvent[], title: string) {
     if (partial) return partial;
   }
   return events[events.length - 1];
+}
+
+function findStrictMatchingEvent(events: PlannerEvent[], title: string) {
+  const matchTitle = normalizeMatch(title);
+  if (!matchTitle) return undefined;
+
+  return (
+    events.find((item) => normalizeMatch(item.title) === matchTitle) ||
+    events.find((item) => normalizeMatch(item.title).includes(matchTitle)) ||
+    events.find((item) => {
+      const itemTitle = normalizeMatch(item.title);
+      return Boolean(itemTitle) && matchTitle.includes(itemTitle);
+    })
+  );
 }
 
 function getTimestampFromId(id: string) {
@@ -523,6 +556,25 @@ export function applyPlannerCommand(
   if (command.kind === 'task') {
     const existingTasks = readPlannerStorage<PlannerTask[]>(TASKS_STORAGE_KEY, []);
 
+    if (command.mode === 'delete') {
+      const target = findStrictMatchingTask(existingTasks, resolvedTitle);
+      if (!target) {
+        return {
+          success: false,
+          message: `I could not find "${resolvedTitle}" in your to-do list to delete.`,
+        };
+      }
+
+      writePlannerStorage(
+        TASKS_STORAGE_KEY,
+        existingTasks.filter((item) => item.id !== target.id)
+      );
+      return {
+        success: true,
+        message: `Done - I deleted "${target.title}" from your to-do list.`,
+      };
+    }
+
     if (command.mode === 'update') {
       const target = findMatchingTask(existingTasks, resolvedTitle);
       if (!target) {
@@ -584,6 +636,25 @@ export function applyPlannerCommand(
   const resolvedDate = command.date || new Date().toISOString().slice(0, 10);
   const resolvedStartTime = command.startTime || '09:00';
   const resolvedEndTime = command.endTime || addMinutes(resolvedStartTime, 30);
+
+  if (command.mode === 'delete') {
+    const target = findStrictMatchingEvent(existingEvents, resolvedTitle);
+    if (!target) {
+      return {
+        success: false,
+        message: `I could not find "${resolvedTitle}" in your calendar to delete.`,
+      };
+    }
+
+    writePlannerStorage(
+      EVENTS_STORAGE_KEY,
+      existingEvents.filter((item) => item.id !== target.id)
+    );
+    return {
+      success: true,
+      message: `Done - I deleted "${target.title}" from your calendar.`,
+    };
+  }
 
   if (command.mode === 'update') {
     const target = findMatchingEvent(existingEvents, resolvedTitle);

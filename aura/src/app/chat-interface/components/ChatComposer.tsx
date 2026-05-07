@@ -2,6 +2,11 @@
 
 import React, { useState, useRef, useCallback } from 'react';
 import { Paperclip, Mic, MicOff, Send, Square, BookMarked, Image as ImageIcon, X, FileText } from 'lucide-react';
+import {
+  expandSlashCommand,
+  getSlashCommandSuggestions,
+  type SlashCommandDefinition,
+} from '@/lib/slashCommands';
 
 
 interface ChatComposerProps {
@@ -17,8 +22,15 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
   const [content, setContent] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const shouldRefocusAfterStreamRef = useRef(false);
+  const slashSuggestions = React.useMemo(
+    () => getSlashCommandSuggestions(content).slice(0, 8),
+    [content]
+  );
+  const showSlashMenu = slashSuggestions.length > 0 && content.trimStart().startsWith('/');
 
   React.useEffect(() => {
     const handleApplyPrompt = (e: any) => {
@@ -36,12 +48,62 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setContent(e.target.value);
+    setSelectedSlashIndex(0);
     const el = e.target;
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   };
 
+  const focusAndResize = useCallback(() => {
+    requestAnimationFrame(() => {
+      if (!textareaRef.current) return;
+      textareaRef.current.focus();
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+    });
+  }, []);
+
+  React.useEffect(() => {
+    if (isStreaming || !shouldRefocusAfterStreamRef.current) return;
+    shouldRefocusAfterStreamRef.current = false;
+    focusAndResize();
+  }, [focusAndResize, isStreaming]);
+
+  const applySlashSuggestion = useCallback(
+    (command: SlashCommandDefinition) => {
+      const trimmed = content.trimStart();
+      const remainder = trimmed.replace(/^\/\S*\s*/, '').trim();
+      setContent(`/${command.name}${remainder ? ` ${remainder}` : ' '}`);
+      setSelectedSlashIndex(0);
+      focusAndResize();
+    },
+    [content, focusAndResize]
+  );
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showSlashMenu) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedSlashIndex((index) => (index + 1) % slashSuggestions.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedSlashIndex((index) => (index - 1 + slashSuggestions.length) % slashSuggestions.length);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        applySlashSuggestion(slashSuggestions[selectedSlashIndex] || slashSuggestions[0]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setContent('');
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -50,12 +112,14 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
 
   const handleSend = () => {
     if (!content.trim() || isStreaming) return;
-    onSend(content, attachments.length > 0 ? attachments : undefined);
+    shouldRefocusAfterStreamRef.current = true;
+    onSend(expandSlashCommand(content), attachments.length > 0 ? attachments : undefined);
     setContent('');
     setAttachments([]);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
+    focusAndResize();
   };
 
   const handleFileSelect = (files: FileList | null) => {
@@ -134,15 +198,52 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
           </div>
         )}
 
+        {showSlashMenu && (
+          <div className="mx-3 mt-3 rounded-2xl border border-[#6C47FF]/30 bg-background/95 shadow-2xl shadow-[#6C47FF]/10 overflow-hidden animate-fade-in">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-border/70">
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                Slash commands
+              </span>
+              <span className="text-[11px] text-muted-foreground">Use arrows, Tab, or click</span>
+            </div>
+            <div className="max-h-72 overflow-y-auto scrollbar-thin p-1.5">
+              {slashSuggestions.map((command, index) => (
+                <button
+                  key={`slash-${command.name}`}
+                  type="button"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    applySlashSuggestion(command);
+                  }}
+                  className={`w-full text-left rounded-xl px-3 py-2.5 transition-colors ${
+                    index === selectedSlashIndex
+                      ? 'bg-[#6C47FF]/15 text-foreground'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-mono text-sm text-[#8F72FF]">/{command.name}</span>
+                    <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                      {command.category}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed">{command.description}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <textarea
           ref={textareaRef}
           value={content}
           onChange={handleInput}
           onKeyDown={handleKeyDown}
-          placeholder="Message Akansha... (Shift+Enter for new line)"
+          placeholder="Message Akansha... Type / for commands"
           rows={1}
           className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none leading-relaxed min-h-[52px]"
-          disabled={isStreaming}
+          readOnly={isStreaming}
+          aria-disabled={isStreaming}
         />
 
         <div className="flex items-center justify-between px-3 pb-3">

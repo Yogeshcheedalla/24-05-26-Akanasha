@@ -19,26 +19,49 @@ const FEMALE_VIDEO_SRC = '/video/realistic-girl-avatar.mp4';
 const ENHANCED_FEMALE_VIDEO_SRC = '/video/realistic-facial-animation.mp4';
 
 const VIDEO_SEGMENTS = {
-  idle: { start: 0.25, end: 1.3 },
-  listening: { start: 1.35, end: 2.25 },
+  idle: { start: 6.9, end: 7.85 },
+  listening: { start: 5.85, end: 6.65 },
   speaking: {
-    start: 2.35,
-    end: 6.9,
-    anchors: [2.46, 2.72, 3.02, 3.33, 3.68, 4.02, 4.32, 4.66, 5.04, 5.4, 5.82, 6.18, 6.52],
+    start: 0,
+    end: 6.75,
+    anchors: [0, 0.25, 0.5, 0.875, 1.25, 1.75, 2.125, 2.625, 3, 3.375, 4, 4.5, 5, 5.625, 6.25, 6.625],
   },
 } as const;
 
 const VISEME_ANCHORS: Record<number, number[]> = {
-  0: [2.38, 6.52],
-  1: [3.02, 3.33, 4.02],
-  2: [2.72, 5.4],
-  3: [3.68, 6.18],
-  4: [2.46, 6.52],
-  5: [4.66],
-  6: [5.04],
-  7: [5.82],
-  8: [4.32],
+  0: [6.875, 7, 7.125, 7.875],
+  1: [0, 2.625, 2.75, 4, 4.125],
+  2: [0.25, 0.375, 0.5, 0.625, 3.75, 5.875, 6.75],
+  3: [0.875, 1, 2, 2.125, 3.125, 3.5, 5.5, 5.625, 6.25],
+  4: [1.125, 1.5, 3, 3.625, 4.75, 5, 5.125, 7.25],
+  5: [1.25, 3.25, 5.25],
+  6: [0.75, 1.75, 2.25, 3.875, 4.625, 5.75, 6],
+  7: [2.5, 2.875, 4.5, 6.375],
+  8: [1.375, 1.625, 5.375, 6.125, 6.5],
 };
+
+function getEmotionAwareAnchors(visemeKey: number, emotion: AssistantEmotion) {
+  const anchors = VISEME_ANCHORS[visemeKey] ?? VIDEO_SEGMENTS.speaking.anchors;
+
+  if (emotion === 'happy') {
+    if (visemeKey === 1) return [0, 2.625, 4, 4.125];
+    if (visemeKey === 2 || visemeKey === 8) return [0.25, 0.5, 3.75, 5.875, 6.75];
+    if (visemeKey === 0) return [6.75, 6.875, 7];
+  }
+
+  if (emotion === 'surprised') {
+    if (visemeKey === 1 || visemeKey === 7) return [0, 2.625, 2.75, 4, 4.5];
+    if (visemeKey === 3) return [0.875, 2, 2.125, 3.125];
+  }
+
+  if (emotion === 'sad' || emotion === 'thinking') {
+    if (visemeKey === 1) return [2.625, 4, 4.125];
+    if (visemeKey === 2) return [5.875, 6.75];
+    if (visemeKey === 0 || visemeKey === 8) return [6.125, 6.5, 7, 7.125];
+  }
+
+  return anchors;
+}
 
 const STAGE_VARIANTS: Record<
   VoiceGender,
@@ -85,6 +108,8 @@ export function AssistantAvatarStage({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const phaseRef = useRef(0);
+  const lastVisemeRef = useRef(-1);
+  const selectedAnchorRef = useRef(0);
   const metadataReadyRef = useRef(false);
   const interactionMode = isSpeaking ? 'speaking' : isListening ? 'listening' : 'idle';
   const activeEmotion = interactionMode === 'listening' ? listenerEmotion : emotion;
@@ -112,22 +137,29 @@ export function AssistantAvatarStage({
 
       if (interactionMode === 'speaking') {
         const visemeKey = Math.max(0, Math.min(8, Math.round(viseme)));
-        const anchors = VISEME_ANCHORS[visemeKey] ?? VIDEO_SEGMENTS.speaking.anchors;
-        phaseRef.current = (phaseRef.current + 0.18 + speakingVolume * 0.04) % 1;
-        const anchorIndex = Math.min(
-          anchors.length - 1,
-          Math.floor(phaseRef.current * anchors.length)
-        );
-        const microMotion = Math.sin(phaseRef.current * Math.PI * 2) * 0.018;
+        const anchors = getEmotionAwareAnchors(visemeKey, activeEmotion);
+        if (lastVisemeRef.current !== visemeKey) {
+          selectedAnchorRef.current = (selectedAnchorRef.current + 1) % anchors.length;
+          lastVisemeRef.current = visemeKey;
+          phaseRef.current = 0;
+        }
+
+        phaseRef.current = (phaseRef.current + 0.1 + speakingVolume * 0.025) % 1;
+        const anchorIndex = Math.min(anchors.length - 1, selectedAnchorRef.current);
+        const mouthEnergy = Math.max(0, Math.min(1, speakingVolume));
+        const microMotion =
+          Math.sin(phaseRef.current * Math.PI * 2) *
+          (visemeKey === 0 ? 0.004 : 0.008 + mouthEnergy * 0.008);
         const targetTime = Math.max(
           VIDEO_SEGMENTS.speaking.start,
           Math.min(VIDEO_SEGMENTS.speaking.end, anchors[anchorIndex] + microMotion)
         );
 
-        if (Math.abs(video.currentTime - targetTime) > 0.018) {
+        if (Math.abs(video.currentTime - targetTime) > 0.012) {
           video.currentTime = targetTime;
         }
       } else if (interactionMode === 'listening') {
+        lastVisemeRef.current = -1;
         const span = VIDEO_SEGMENTS.listening.end - VIDEO_SEGMENTS.listening.start;
         phaseRef.current = (phaseRef.current + 0.012) % 1;
         const targetTime =
@@ -138,6 +170,7 @@ export function AssistantAvatarStage({
           video.currentTime = targetTime;
         }
       } else {
+        lastVisemeRef.current = -1;
         const span = VIDEO_SEGMENTS.idle.end - VIDEO_SEGMENTS.idle.start;
         phaseRef.current = (phaseRef.current + 0.008) % 1;
         const targetTime =
@@ -160,7 +193,7 @@ export function AssistantAvatarStage({
         animationFrameRef.current = null;
       }
     };
-  }, [interactionMode, speakingVolume, variant.mediaType, viseme]);
+  }, [activeEmotion, interactionMode, speakingVolume, variant.mediaType, viseme]);
 
   useEffect(() => {
     if (variant.mediaType !== 'video' || !videoRef.current) return;

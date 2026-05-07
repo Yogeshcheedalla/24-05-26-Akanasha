@@ -60,6 +60,8 @@ class UserProfile(Base):
     interrupt_enabled = Column(Boolean, default=True)
     google_connected = Column(Boolean, default=False)
     google_email = Column(String, nullable=True)
+    username = Column(String, nullable=True)
+    password = Column(String, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 class IntegrationConnection(Base):
@@ -75,6 +77,16 @@ class IntegrationConnection(Base):
     is_connected = Column(Boolean, default=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
+class SpeakerProfile(Base):
+    __tablename__ = "speaker_profiles"
+    id = Column(Integer, primary_key=True, index=True)
+    display_name = Column(String, index=True)
+    relationship_to_owner = Column(String, nullable=True)
+    access_level = Column(String, default="guest")  # owner | trusted | guest
+    notes = Column(Text, nullable=True)
+    last_intro_text = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -87,11 +99,11 @@ def ensure_profile_columns():
 
         existing_columns = {row[1] for row in column_rows}
         if "voice_language" not in existing_columns:
-            connection.execute(
-                text(
-                    "ALTER TABLE user_profiles ADD COLUMN voice_language VARCHAR DEFAULT 'telugu_english'"
-                )
-            )
+            connection.execute(text("ALTER TABLE user_profiles ADD COLUMN voice_language VARCHAR DEFAULT 'telugu_english'"))
+        if "username" not in existing_columns:
+            connection.execute(text("ALTER TABLE user_profiles ADD COLUMN username VARCHAR"))
+        if "password" not in existing_columns:
+            connection.execute(text("ALTER TABLE user_profiles ADD COLUMN password VARCHAR"))
 
 
 ensure_profile_columns()

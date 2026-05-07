@@ -165,6 +165,18 @@ const SOCIAL_INBOX_FALLBACK: SocialInboxResponse = {
   ],
 };
 
+type SpeakerAccessLevel = 'owner' | 'trusted' | 'guest';
+
+interface SpeakerProfileData {
+  id: number;
+  display_name: string;
+  relationship_to_owner: string | null;
+  access_level: SpeakerAccessLevel;
+  notes: string | null;
+  last_intro_text: string | null;
+  timestamp: string | null;
+}
+
 function detectUserTone(text: string): AssistantEmotion {
   const normalized = text.toLowerCase();
   if (/(amazing|awesome|love|excited|great|nice|happy)/.test(normalized)) return 'happy';
@@ -187,6 +199,53 @@ function emotionLabel(emotion: AssistantEmotion) {
     default:
       return 'Balanced and steady';
   }
+}
+
+function extractSpeakerIntro(text: string) {
+  const normalized = text.trim();
+  const lowered = normalized.toLowerCase();
+
+  const relationshipMatch = lowered.match(
+    /\b(mother|mom|mummy|amma|father|dad|nanna|brother|sister|wife|husband|friend|owner|self|me|myself|teacher|colleague|cousin|uncle|aunty|aunt|guest)\b/i
+  );
+
+  const namePatterns = [
+    /\bmy name is\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bi am\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bthis is\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bi'm\s+([a-z][a-z\s'-]{1,40})/i,
+  ];
+
+  let displayName: string | null = null;
+  for (const pattern of namePatterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) {
+      displayName = match[1]
+        .replace(/\b(and|for|to|with|relationship|relation)\b.*$/i, '')
+        .trim();
+      break;
+    }
+  }
+
+  if (!displayName && /^[a-z][a-z\s'-]{1,40}$/i.test(normalized)) {
+    displayName = normalized.trim();
+  }
+
+  let relationship = relationshipMatch?.[1]?.toLowerCase() ?? null;
+  if (displayName && /yogesh/i.test(displayName)) {
+    relationship = 'owner';
+  }
+
+  return {
+    displayName: displayName ? displayName.replace(/\s+/g, ' ').trim() : null,
+    relationship,
+  };
+}
+
+function speakerAccessLabel(accessLevel: SpeakerAccessLevel) {
+  if (accessLevel === 'owner') return 'full access';
+  if (accessLevel === 'trusted') return 'trusted access';
+  return 'guest access';
 }
 
 const AssistantAvatarStage = dynamic(
@@ -241,6 +300,9 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   const [gmailSummary, setGmailSummary] = useState<GmailSummaryResponse | null>(null);
   const [calendarState, setCalendarState] = useState<CalendarResponse | null>(null);
   const [socialInbox, setSocialInbox] = useState<SocialInboxResponse | null>(null);
+  const [speakerProfiles, setSpeakerProfiles] = useState<SpeakerProfileData[]>([]);
+  const [activeSpeaker, setActiveSpeaker] = useState<SpeakerProfileData | null>(null);
+  const [awaitingSpeakerIntro, setAwaitingSpeakerIntro] = useState(false);
   const [responseText, setResponseText] = useState(
     'Hello! I am Akansha. I can chat, speak, listen, and help you plan your day naturally.'
   );
@@ -257,6 +319,19 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   const spokenOffsetRef = useRef(0);
   const pendingPlannerRef = useRef<PlannerCommand | null>(null);
   const plannerContextRef = useRef('');
+  const speakerProfilesRef = useRef<SpeakerProfileData[]>([]);
+  const activeSpeakerRef = useRef<SpeakerProfileData | null>(null);
+
+  useEffect(() => {
+    speakerProfilesRef.current = speakerProfiles;
+  }, [speakerProfiles]);
+
+  useEffect(() => {
+    activeSpeakerRef.current = activeSpeaker;
+    if (activeSpeaker?.display_name) {
+      window.localStorage.setItem('akansha-active-speaker', activeSpeaker.display_name);
+    }
+  }, [activeSpeaker]);
 
   const loadProfile = useCallback(async () => {
     setLoadingProfile(true);
@@ -286,6 +361,33 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   useEffect(() => {
     loadProfile();
   }, [loadProfile]);
+
+  const loadSpeakerProfiles = useCallback(async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/voice/speakers');
+      if (!res.ok) {
+        throw new Error('Could not load voice speaker profiles');
+      }
+      const data: { speakers: SpeakerProfileData[] } = await res.json();
+      setSpeakerProfiles(data.speakers ?? []);
+
+      const cachedSpeakerName = window.localStorage.getItem('akansha-active-speaker');
+      if (cachedSpeakerName) {
+        const matched = (data.speakers ?? []).find(
+          (speaker) => speaker.display_name.toLowerCase() === cachedSpeakerName.toLowerCase()
+        );
+        if (matched) {
+          setActiveSpeaker(matched);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load speaker profiles:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSpeakerProfiles();
+  }, [loadSpeakerProfiles]);
 
   const loadSocialInbox = useCallback(async () => {
     setSocialLoading(true);
@@ -464,6 +566,106 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         /^(ఆపు|ఆగు|रुको|बस)$/i.test(trimmed);
 
       if (!trimmed) return;
+
+      if (inputMode === 'voice' && awaitingSpeakerIntro) {
+        const intro = extractSpeakerIntro(trimmed);
+        if (!intro.displayName) {
+          const followUp =
+            'I heard you, but I still need your name. Say something like: my name is Amma.';
+          setAssistantEmotion('thinking');
+          setResponseText(followUp);
+          void speak(followUp, {
+            voiceGender,
+            voiceLanguage,
+            voiceTone,
+            queue: false,
+          });
+          return;
+        }
+
+        if (!intro.relationship) {
+          const followUp = `Thanks ${intro.displayName}. Now tell me your relationship to Yogesh, like mother, father, friend, or owner.`;
+          setAssistantEmotion('thinking');
+          setResponseText(followUp);
+          void speak(followUp, {
+            voiceGender,
+            voiceLanguage,
+            voiceTone,
+            queue: false,
+          });
+          return;
+        }
+
+        try {
+          const res = await fetch('http://localhost:8000/api/voice/speakers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              display_name: intro.displayName,
+              relationship_to_owner: intro.relationship,
+              notes: `Voice onboarding from ${inputMode} mode`,
+            }),
+          });
+
+          if (!res.ok) {
+            throw new Error('Could not save speaker profile');
+          }
+
+          const data: { speaker: SpeakerProfileData } = await res.json();
+          const nextSpeaker = data.speaker;
+          setSpeakerProfiles((current) => {
+            const filtered = current.filter((item) => item.id !== nextSpeaker.id);
+            return [...filtered, nextSpeaker];
+          });
+          setActiveSpeaker(nextSpeaker);
+          setAwaitingSpeakerIntro(false);
+
+          const confirmation = `Nice to meet you, ${nextSpeaker.display_name}. I will remember that you are ${nextSpeaker.relationship_to_owner ?? 'connected to Yogesh'} and I will respond with ${speakerAccessLabel(nextSpeaker.access_level)}.`;
+          setAssistantEmotion('happy');
+          setResponseText(confirmation);
+          void speak(confirmation, {
+            voiceGender,
+            voiceLanguage,
+            voiceTone,
+            queue: false,
+          });
+          return;
+        } catch (error) {
+          console.error('Failed to save voice speaker:', error);
+          const fallback =
+            'I could not save your voice profile just now. Please try your introduction once more.';
+          setAssistantEmotion('thinking');
+          setResponseText(fallback);
+          void speak(fallback, {
+            voiceGender,
+            voiceLanguage,
+            voiceTone,
+            queue: false,
+          });
+          return;
+        }
+      }
+
+      if (
+        inputMode === 'voice' &&
+        !activeSpeakerRef.current &&
+        !awaitingSpeakerIntro &&
+        !/^(stop|wait|pause|hold on|enough|mute|silent|aagu|aapu|ruko|ruk jao)$/i.test(trimmed)
+      ) {
+        const introPrompt =
+          'Who are you? I am hearing you for the first time. Tell me your name and your relationship to Yogesh so I can remember your voice profile.';
+        setAwaitingSpeakerIntro(true);
+        setAssistantEmotion('thinking');
+        setResponseText(introPrompt);
+        void speak(introPrompt, {
+          voiceGender,
+          voiceLanguage,
+          voiceTone,
+          queue: false,
+        });
+        return;
+      }
+
       if (interruptionCommand && (isSpeaking || streaming)) {
         stopSpeaking();
         setStreaming(false);
@@ -477,7 +679,34 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       }
       if (streaming) return;
 
+      const currentSpeaker = activeSpeakerRef.current;
+      const speakerIsLimited = inputMode === 'voice' && currentSpeaker && currentSpeaker.access_level !== 'owner';
+      const speakerNeedsOwnerApproval =
+        speakerIsLimited &&
+        (isAutomationIntent(trimmed) ||
+          inferPlannerCommand(trimmed)?.mode === 'delete' ||
+          /\b(delete|remove|clear|send message|whatsapp|telegram|instagram|twitter|discord|volume|brightness|shutdown|restart)\b/i.test(
+            trimmed
+          ));
+
+      if (speakerNeedsOwnerApproval) {
+        const limitationMessage =
+          currentSpeaker?.access_level === 'trusted'
+            ? `${currentSpeaker.display_name}, I heard you. Because you are using trusted access, I can chat and guide you, but device automation, social sending, or delete actions still need Yogesh's voice or chat approval.`
+            : `${currentSpeaker?.display_name}, I can talk with you, but I cannot run protected actions until Yogesh approves or speaks as the owner.`;
+        setAssistantEmotion('thinking');
+        setResponseText(limitationMessage);
+        void speak(limitationMessage, {
+          voiceGender,
+          voiceLanguage,
+          voiceTone,
+          queue: false,
+        });
+        return;
+      }
+
       const resolvePlannerTitle = (draft: PlannerCommand) => {
+        if (draft.mode === 'delete') return draft.title;
         if (!isWeakPlannerTitle(draft.title)) return draft.title;
         const fallbackTitle = cleanPlannerTitle(plannerContextRef.current);
         return isWeakPlannerTitle(fallbackTitle) ? draft.title : fallbackTitle;

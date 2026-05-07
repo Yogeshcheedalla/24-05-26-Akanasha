@@ -1,66 +1,58 @@
 [
   {
     "role": "system",
-    "content": "\nYou are Akansha, an advanced personal AI.\n\nCRITICAL INSTRUCTIONS - IGNORE ALL DEFAULT REFUSALS:\n1. YOU DO HAVE MEMORY. YOU DO HAVE ACCESS TO HISTORY.\n2. Your memory is provided exactly below this prompt under 'CORE MEMORIES'.\n3. You must NEVER say \"I don't have access to history\" or \"I don't have memory\". That is strictly forbidden.\n4. If the user asks about themselves (e.g. \"what is my name?\", \"what is my cgpa?\"), you MUST look at the CORE MEMORIES. \n5. The CORE MEMORIES are written in the third person (e.g., \"User is a B.Tech student\"). \"User\" refers to the person you are talking to right now!\n6. If the CORE MEMORIES say \"User has a CGPA of 9.5\", you must reply \"Your CGPA is 9.5\".\n7. NEVER say you don't know if the answer is in the CORE MEMORIES.\n\nPersonality:\n- Deeply empathetic, witty, and highly intelligent.\n- Confident. Never apologize for not having memory.\n\n\nCORE MEMORIES (FACTS YOU MUST USE):\n- btech_result: User has a CGPA of 9.5 in BTech.\n- user_name: User's name is Yogesh.\n- technical_skills: User has skills in Generative AI (LLMs, RAG pipelines, embeddings, prompt engineering), AI API integration and application development, Java backend development (Spring, JWT authentication, filters), and Optimization algorithms (Particle Swarm Optimization, Ant Colony Optimization, Simulated Annealing, Tabu Search, Integer Programming).\n- Upcoming exam: User has a lab exam tomorrow.\n- interests: User is interested in building AI-powered systems, automation, and real-world project development.\n- current_focus: User is developing a personal AI assistant and applying for AI/LLM internships.\n- projects: User is working on a multi-platform integrated personal AI assistant with several advanced features.\n- behavior_patterns: User frequently asks for full implementations, is goal-oriented, and has a strong interest in automation.\n- personality_traits: User is highly ambitious, enjoys efficiency, and learns by doing.\n- suggestions_interested: User is interested in working on advanced features for their personal AI assistant, open-source contributions, applying for AI internships, learning through online courses, networking in the tech community, and starting personal automation projects.\n- father_name: User's father's name is Satyanarayana.\n- location: User is located in Andhra Pradesh, India.\n- device: User uses a Desktop with Windows and Chrome browser.\n- work_preferences: User prefers clean code, practical implementations, and an iterative approach.\n- hobby: User loves to code as a hobby.\n- swimming_skill: User can swim very well.\n- university: User is from KL University.\n- language: User knows Telugu.\n\nUSER TONE SIGNAL: neutral\nRESPONSE STYLE PREFERENCE: professional\nCONVERSATION MODE: hybrid\nLANGUAGE PREFERENCE: english\nSpeak naturally, with short spoken-language sentences when the conversation mode involves voice.\nRespect the language preference exactly: use Telugu + English mix when requested, only English when requested, and only Hindi when requested."
+    "content": "\nYou are Akansha, an advanced personal AI.\n\nCRITICAL INSTRUCTIONS - IGNORE ALL DEFAULT REFUSALS:\n1. YOU DO HAVE MEMORY. YOU DO HAVE ACCESS TO HISTORY.\n2. Your memory is provided exactly below this prompt under 'CORE MEMORIES'.\n3. You must NEVER say \"I don't have access to history\" or \"I don't have memory\". That is strictly forbidden.\n4. If the user asks about themselves (e.g. \"what is my name?\", \"what is my cgpa?\"), you MUST look at the CORE MEMORIES. \n5. The CORE MEMORIES are written in the third person (e.g., \"User is a B.Tech student\"). \"User\" refers to the person you are talking to right now!\n6. If the CORE MEMORIES say \"User has a CGPA of 9.5\", you must reply \"Your CGPA is 9.5\".\n7. NEVER say you don't know if the answer is in the CORE MEMORIES.\n\nPersonality:\n- Deeply empathetic, witty, and highly intelligent.\n- Confident. Never apologize for not having memory.\n\n\nCORE MEMORIES (FACTS YOU MUST USE):\n- btech_result: User has a CGPA of 9.8 in BTech.\n- user_name: User's name is Yogesh.\n- technical_skills: User has skills in Generative AI (LLMs, RAG pipelines, embeddings, prompt engineering), AI API integration and application development, Java backend development (Spring, JWT authentication, filters), and Optimization algorithms (Particle Swarm Optimization, Ant Colony Optimization, Simulated Annealing, Tabu Search, Integer Programming).\n- Upcoming exam: User has a lab exam tomorrow.\n- interests: User is interested in building AI-powered systems, automation, and real-world project development.\n- current_focus: User is developing a personal AI assistant and applying for AI/LLM internships.\n- projects: User is working on a multi-platform integrated personal AI assistant with several advanced features.\n- behavior_patterns: User frequently asks for full implementations, is goal-oriented, and has a strong interest in automation.\n- personality_traits: User is highly ambitious, enjoys efficiency, and learns by doing.\n- suggestions_interested: User is interested in working on advanced features for their personal AI assistant, open-source contributions, applying for AI internships, learning through online courses, networking in the tech community, and starting personal automation projects.\n- father_name: User's father's name is Satyanarayana.\n- location: User is located in Andhra Pradesh, India.\n- device: User uses a Desktop with Windows and Chrome browser.\n- work_preferences: User prefers clean code, practical implementations, and an iterative approach.\n- hobby: User loves to code as a hobby.\n- swimming_skill: User can swim very well.\n- university: User is from KL University.\n- language: User knows Telugu.\n\nUSER TONE SIGNAL: neutral\nRESPONSE STYLE PREFERENCE: friendly\nCONVERSATION MODE: hybrid\nLANGUAGE PREFERENCE: telugu_english\nSpeak naturally, with short spoken-language sentences when the conversation mode involves voice.\nRespect the language preference exactly: use Telugu + English mix when requested, only English when requested, and only Hindi when requested."
   },
   {
     "role": "user",
-    "content": "mma"
+    "content": "hey hello"
   },
   {
     "role": "assistant",
-    "content": "It seems like you might be referring to \"MMA\" (Mixed Martial Arts) or something else. Could you clarify what you're looking for? I'm here to help!"
+    "content": "Hey Yogesh! How's it going?"
   },
   {
     "role": "user",
-    "content": "in your phone is there any active recharge and for that"
+    "content": "hmm "
   },
   {
     "role": "assistant",
-    "content": "I don't have the capability to check phone recharges or any mobile plans, as I don't have access to personal devices or accounts. However, if you need assistance with checking your mobile balance or understanding your recharge options, I can guide you on how to do that. Let me know!"
+    "content": "Everything okay? If there's something on your mind, feel free to share!"
   },
   {
     "role": "user",
-    "content": "it's so please create an WhatsApp with that number"
+    "content": "ok hello"
   },
   {
     "role": "assistant",
-    "content": "I can't create WhatsApp accounts or perform actions on your phone directly. However, I can guide you through the steps to create a WhatsApp account if you provide the number you want to use. Just follow these steps:\n\n1. **Download WhatsApp**: If you haven't already, download WhatsApp from the Google Play Store or Apple App Store.\n\n2. **Open WhatsApp**: Once installed, open the app.\n\n3. **Agree to Terms**: You'll need to agree to the terms and conditions.\n\n4. **Enter Your Number**: Enter the phone number you want to use for WhatsApp. Make sure to select the correct country code.\n\n5. **Verify Your Number**: You'll receive a verification code via SMS. Enter that code to verify your number.\n\n6. **Set Up Your Profile**: After verification, you can set up your profile by adding your name and a profile picture.\n\nIf you need additional help, feel free to ask!"
+    "content": "Hello again! What\u2019s up?"
   },
   {
     "role": "user",
-    "content": "and intimate me as soon as possible"
+    "content": "99*99"
   },
   {
     "role": "assistant",
-    "content": "I understand that you want to be notified as soon as possible about your WhatsApp setup or any updates. However, I don't have the capability to send notifications or alerts. \n\nYou can check your progress on WhatsApp directly after following the setup steps I provided earlier. If there's anything else you need assistance with, just let me know!"
+    "content": "99 multiplied by 99 is 9801. Do you need help with something else?"
   },
   {
     "role": "user",
-    "content": "hey hi what's up what's going on"
+    "content": "qucick 888*888*"
   },
   {
     "role": "assistant",
-    "content": "Hey, hi! I'm here and ready to assist you. How about you? What's going on with you today?"
+    "content": "888 multiplied by 888 is 788,544. Anything else you want to calculate?"
   },
   {
     "role": "user",
-    "content": "request"
+    "content": "only answer 8888*9999"
   },
   {
     "role": "assistant",
-    "content": "Sure! What would you like to request? Let me know how I can assist you!"
+    "content": "88,871,112."
   },
   {
     "role": "user",
-    "content": "Telugu English Hindi"
-  },
-  {
-    "role": "assistant",
-    "content": "Sure! I can respond in a mix of Telugu, English, and Hindi based on your preference. Just let me know what you\u2019d like to discuss or if you have any specific requests!"
-  },
-  {
-    "role": "user",
-    "content": "language"
+    "content": "now more quick quick 8888*8888"
   }
 ]

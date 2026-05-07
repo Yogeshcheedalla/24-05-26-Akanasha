@@ -145,6 +145,30 @@ const HINDI_VISEMES: Record<string, VisemeCode> = {
   '\u0937': 7, '\u0939': 7,
 };
 
+const TELUGU_MATRA_VISEMES: Record<string, VisemeCode> = {
+  '\u0C3E': 1,
+  '\u0C3F': 2, '\u0C40': 2, '\u0C46': 2, '\u0C47': 2, '\u0C48': 2,
+  '\u0C41': 3, '\u0C42': 3, '\u0C4A': 3, '\u0C4B': 3, '\u0C4C': 3,
+};
+
+const HINDI_MATRA_VISEMES: Record<string, VisemeCode> = {
+  '\u093E': 1,
+  '\u093F': 2, '\u0940': 2, '\u0947': 2, '\u0948': 2,
+  '\u0941': 3, '\u0942': 3, '\u094B': 3, '\u094C': 3,
+};
+
+function isTeluguChar(char: string) {
+  return /[\u0C00-\u0C7F]/.test(char);
+}
+
+function isHindiChar(char: string) {
+  return /[\u0900-\u097F]/.test(char);
+}
+
+function isIndicMark(char: string) {
+  return /[\u0C01-\u0C04\u0C3E-\u0C56\u0C62-\u0C63\u0901-\u0903\u093C-\u094D\u0951-\u0957\u0962-\u0963]/.test(char);
+}
+
 function latinVisemeAt(text: string, index: number): VisemeCode {
   const pair = text.slice(index, index + 2).toLowerCase();
   const char = text[index]?.toLowerCase() ?? '';
@@ -162,11 +186,83 @@ function latinVisemeAt(text: string, index: number): VisemeCode {
   return 8;
 }
 
-function charToViseme(text: string, index: number): VisemeCode {
+function consumeSpeechCluster(text: string, index: number) {
   const char = text[index] ?? '';
-  if (TELUGU_VISEMES[char]) return TELUGU_VISEMES[char];
-  if (HINDI_VISEMES[char]) return HINDI_VISEMES[char];
-  return latinVisemeAt(text, index);
+
+  if (!char.trim() || /[.!?,;:]/.test(char)) {
+    return { cluster: char, nextIndex: index + 1, kind: 'pause' as const };
+  }
+
+  if (isTeluguChar(char) || isHindiChar(char)) {
+    let nextIndex = index + 1;
+    while (nextIndex < text.length && isIndicMark(text[nextIndex] ?? '')) {
+      nextIndex += 1;
+    }
+
+    return {
+      cluster: text.slice(index, nextIndex),
+      nextIndex,
+      kind: isTeluguChar(char) ? ('telugu' as const) : ('hindi' as const),
+    };
+  }
+
+  const pair = text.slice(index, index + 2).toLowerCase();
+  if (['ch', 'sh', 'jh', 'gy', 'th'].includes(pair)) {
+    return { cluster: text.slice(index, index + 2), nextIndex: index + 2, kind: 'latin' as const };
+  }
+
+  return { cluster: char, nextIndex: index + 1, kind: 'latin' as const };
+}
+
+function indicClusterVisemes(
+  cluster: string,
+  baseMap: Record<string, VisemeCode>,
+  matraMap: Record<string, VisemeCode>
+) {
+  const base = baseMap[cluster[0] ?? ''] ?? 8;
+  const matra = Array.from(cluster).find((char) => matraMap[char]);
+  const vowel = matra ? matraMap[matra] : base === 4 || base === 5 || base === 6 || base === 7 ? 1 : base;
+
+  if (base === vowel || base === 1 || base === 2 || base === 3) {
+    return [{ viseme: vowel, weight: 1, intensity: vowel === 1 ? 0.95 : 0.72 }];
+  }
+
+  return [
+    { viseme: base, weight: 0.38, intensity: base === 4 ? 0.32 : 0.55 },
+    { viseme: vowel, weight: 0.82, intensity: vowel === 1 ? 0.95 : 0.74 },
+  ];
+}
+
+function clusterToVisemeParts(text: string, index: number) {
+  const token = consumeSpeechCluster(text, index);
+
+  if (token.kind === 'pause') {
+    const isPunctuation = /[.!?,;:]/.test(token.cluster);
+    return {
+      nextIndex: token.nextIndex,
+      parts: [{ viseme: 0 as VisemeCode, weight: isPunctuation ? 2.5 : 0.95, intensity: 0 }],
+    };
+  }
+
+  if (token.kind === 'telugu') {
+    return {
+      nextIndex: token.nextIndex,
+      parts: indicClusterVisemes(token.cluster, TELUGU_VISEMES, TELUGU_MATRA_VISEMES),
+    };
+  }
+
+  if (token.kind === 'hindi') {
+    return {
+      nextIndex: token.nextIndex,
+      parts: indicClusterVisemes(token.cluster, HINDI_VISEMES, HINDI_MATRA_VISEMES),
+    };
+  }
+
+  const viseme = latinVisemeAt(text, index);
+  return {
+    nextIndex: token.nextIndex,
+    parts: [{ viseme, weight: token.cluster.length > 1 ? 1.18 : 1, intensity: viseme === 4 ? 0.34 : viseme === 1 ? 0.92 : 0.7 }],
+  };
 }
 
 function buildVisemeTimeline(text: string, mode: VoiceLanguageMode, rate: number): VisemeFrame[] {
@@ -175,27 +271,51 @@ function buildVisemeTimeline(text: string, mode: VoiceLanguageMode, rate: number
 
   const frames: VisemeFrame[] = [];
   let cursor = 0;
-  const baseMs = mode === 'telugu' || mode === 'hindi' ? 92 : mode === 'mixed' ? 84 : 74;
+  const baseMs = mode === 'telugu' || mode === 'hindi' ? 118 : mode === 'mixed' ? 104 : 82;
   const msPerUnit = baseMs / Math.max(0.72, rate);
 
-  for (let index = 0; index < clean.length; index += 1) {
-    const char = clean[index] ?? '';
-    const viseme = charToViseme(clean, index);
-    const isPause = !char.trim() || /[.!?,;:]/.test(char);
-    const isIndianScript = /[\u0C00-\u0C7F\u0900-\u097F]/.test(char);
-    const duration = isPause ? msPerUnit * 2.35 : isIndianScript ? msPerUnit * 1.08 : msPerUnit;
-    const previous = frames[frames.length - 1];
-    const intensity = isPause ? 0 : viseme === 4 ? 0.42 : viseme === 1 ? 0.95 : 0.72;
+  let index = 0;
+  while (index < clean.length) {
+    const { nextIndex, parts } = clusterToVisemeParts(clean, index);
 
-    if (!previous || previous.viseme !== viseme || isPause) {
-      frames.push({ at: cursor / 1000, viseme, intensity });
+    for (const part of parts) {
+      const previous = frames[frames.length - 1];
+      if (!previous || previous.viseme !== part.viseme || part.viseme === 0) {
+        frames.push({ at: cursor / 1000, viseme: part.viseme, intensity: part.intensity });
+      }
+      cursor += msPerUnit * part.weight;
     }
 
-    cursor += duration;
+    index = Math.max(nextIndex, index + 1);
   }
 
   frames.push({ at: cursor / 1000, viseme: 0, intensity: 0 });
   return frames;
+}
+
+function getVisemeFrameAt(frames: VisemeFrame[], currentTime: number, actualDuration?: number) {
+  if (!frames.length) {
+    return { at: 0, viseme: 0 as VisemeCode, intensity: 0 };
+  }
+
+  const predictedDuration = frames[frames.length - 1]?.at ?? 0;
+  const scaledTime =
+    actualDuration && Number.isFinite(actualDuration) && actualDuration > 0 && predictedDuration > 0
+      ? Math.min(predictedDuration, currentTime * (predictedDuration / actualDuration))
+      : currentTime;
+
+  let start = 0;
+  let end = frames.length - 1;
+  while (start < end) {
+    const middle = Math.ceil((start + end) / 2);
+    if ((frames[middle]?.at ?? 0) <= scaledTime) {
+      start = middle;
+    } else {
+      end = middle - 1;
+    }
+  }
+
+  return frames[start] ?? frames[0];
 }
 
 function detectVoiceLanguageMode(
@@ -505,14 +625,7 @@ export function useVoice() {
     visemeIntervalRef.current = window.setInterval(() => {
       if (visemeTimelineRef.current.length) {
         const elapsed = (window.performance.now() - visemeStartTimeRef.current) / 1000;
-        let activeFrame = visemeTimelineRef.current[0];
-        for (const frame of visemeTimelineRef.current) {
-          if (frame.at <= elapsed) {
-            activeFrame = frame;
-          } else {
-            break;
-          }
-        }
+        const activeFrame = getVisemeFrameAt(visemeTimelineRef.current, elapsed);
 
         setState((previous) => ({
           ...previous,
@@ -654,14 +767,11 @@ export function useVoice() {
         let activeVolume = normalized;
 
         if (textFrames.length) {
-          let frame = textFrames[0];
-          for (const candidate of textFrames) {
-            if (candidate.at <= playbackAudio.currentTime) {
-              frame = candidate;
-            } else {
-              break;
-            }
-          }
+          const frame = getVisemeFrameAt(
+            textFrames,
+            playbackAudio.currentTime,
+            playbackAudio.duration
+          );
 
           activeViseme = frame.viseme;
           activeVolume = Math.max(normalized * 0.55, frame.intensity * 0.9);

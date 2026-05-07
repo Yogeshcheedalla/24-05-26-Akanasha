@@ -4,11 +4,19 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import quote_plus
 
+try:
+    import winreg
+except ImportError:  # pragma: no cover - Windows-only helper
+    winreg = None
+
 import fitz
 import pyautogui
+import pygetwindow as gw
+from pywinauto import Desktop
 from pptx import Presentation
 from pptx.util import Inches
 
@@ -23,12 +31,167 @@ APP_LAUNCH_COMMANDS: dict[str, list[str]] = {
     "explorer": ["explorer.exe"],
     "vscode": ["Code.exe"],
     "visual studio code": ["Code.exe"],
-    "chrome": ["chrome.exe"],
-    "brave": ["brave.exe"],
-    "edge": ["msedge.exe"],
+    "chrome": [
+        "chrome.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ],
+    "google chrome": [
+        "chrome.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ],
+    "brave": [
+        "brave.exe",
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+    ],
+    "brave browser": [
+        "brave.exe",
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+    ],
+    "edge": [
+        "start msedge",
+        "microsoft-edge:",
+        "msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
+    "microsoftedge": [
+        "start msedge",
+        "microsoft-edge:",
+        "msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
+    "microsoft edge": [
+        "start msedge",
+        "microsoft-edge:",
+        "msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
     "command prompt": ["cmd.exe"],
     "cmd": ["cmd.exe"],
     "powershell": ["powershell.exe"],
+    "whatsapp": [
+        "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App",
+        "whatsapp:",
+        "WhatsApp.exe",
+    ],
+    "whatsapp desktop": [
+        "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App",
+        "whatsapp:",
+        "WhatsApp.exe",
+    ],
+    "telegram": ["tg:", "Telegram.exe"],
+    "telegram desktop": ["tg:", "Telegram.exe"],
+    "discord": ["discord:", "Discord.exe"],
+    "discord desktop": ["discord:", "Discord.exe"],
+    "word": ["winword.exe"],
+    "excel": ["excel.exe"],
+    "powerpoint": ["powerpnt.exe"],
+    "settings": ["ms-settings:"],
+    "windows settings": ["ms-settings:"],
+    "terminal": ["wt.exe"],
+    "windows terminal": ["wt.exe"],
+    "control panel": ["control.exe"],
+}
+
+START_MENU_FRIENDLY_NAMES: dict[str, str] = {
+    "notepad": "Notepad",
+    "calculator": "Calculator",
+    "calc": "Calculator",
+    "file explorer": "File Explorer",
+    "explorer": "File Explorer",
+    "vscode": "Visual Studio Code",
+    "visual studio code": "Visual Studio Code",
+    "chrome": "Google Chrome",
+    "google chrome": "Google Chrome",
+    "brave": "Brave",
+    "brave browser": "Brave",
+    "edge": "Microsoft Edge",
+    "microsoftedge": "Microsoft Edge",
+    "microsoft edge": "Microsoft Edge",
+    "command prompt": "Command Prompt",
+    "cmd": "Command Prompt",
+    "powershell": "PowerShell",
+    "whatsapp": "WhatsApp",
+    "whatsapp desktop": "WhatsApp",
+    "telegram": "Telegram",
+    "telegram desktop": "Telegram",
+    "discord": "Discord",
+    "discord desktop": "Discord",
+    "word": "Word",
+    "excel": "Excel",
+    "powerpoint": "PowerPoint",
+    "settings": "Settings",
+    "windows settings": "Settings",
+    "terminal": "Windows Terminal",
+    "windows terminal": "Windows Terminal",
+    "control panel": "Control Panel",
+}
+
+APP_REGISTRY_EXECUTABLES: dict[str, list[str]] = {
+    "edge": ["msedge.exe"],
+    "microsoftedge": ["msedge.exe"],
+    "microsoft edge": ["msedge.exe"],
+    "chrome": ["chrome.exe"],
+    "google chrome": ["chrome.exe"],
+    "brave": ["brave.exe"],
+    "brave browser": ["brave.exe"],
+    "word": ["winword.exe"],
+    "excel": ["excel.exe"],
+    "powerpoint": ["powerpnt.exe"],
+    "whatsapp": ["WhatsApp.exe"],
+    "whatsapp desktop": ["WhatsApp.exe"],
+    "telegram": ["Telegram.exe"],
+    "telegram desktop": ["Telegram.exe"],
+    "discord": ["Discord.exe"],
+    "discord desktop": ["Discord.exe"],
+}
+
+APP_NAME_ALIASES: dict[str, str] = {
+    "ms edge": "microsoft edge",
+    "microsoftedge": "microsoft edge",
+    "edge browser": "microsoft edge",
+    "browser edge": "microsoft edge",
+    "google chrome": "chrome",
+    "chrome browser": "chrome",
+    "brave browser": "brave",
+    "whats app": "whatsapp",
+    "whatsup": "whatsapp",
+    "watsup": "whatsapp",
+    "whatsap": "whatsapp",
+    "whatsapp desktop": "whatsapp",
+    "telegram desktop": "telegram",
+    "discord desktop": "discord",
+    "windows settings": "settings",
+    "windows terminal": "terminal",
+    "whatsup desktop": "whatsapp",
+    "whatsapp web": "whatsapp",
+    "microsoft edge desktop": "microsoft edge",
+    "edge desktop": "microsoft edge",
+}
+
+AMMA_ONLY_CONTACT_ALIASES: dict[str, str] = {
+    "amma": "Amma",
+    "ammaa": "Amma",
+    "ammah": "Amma",
+    "amm": "Amma",
+    "am ma": "Amma",
+    "mummy": "Amma",
+    "mumyy": "Amma",
+    "mommy": "Amma",
+    "mom": "Amma",
+    "mother": "Amma",
+    "mamma": "Amma",
+    "mumy": "Amma",
+}
+
+WHATSAPP_CONTACT_DISPLAY_NAMES: dict[str, list[str]] = {
+    "Amma": ["Amma💗", "Amma"],
 }
 
 SPECIAL_FOLDERS: dict[str, Path] = {
@@ -41,23 +204,549 @@ SPECIAL_FOLDERS: dict[str, Path] = {
 }
 
 
+def _lookup_windows_app_path(executable_name: str) -> str | None:
+    if not winreg or not executable_name.lower().endswith(".exe"):
+        return None
+
+    registry_path = fr"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{executable_name}"
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive, registry_path) as key:
+                path, _ = winreg.QueryValueEx(key, None)
+                if path and os.path.exists(path):
+                    return path
+        except OSError:
+            continue
+    return None
+
+
+def _normalize_app_name(app_name: str) -> str:
+    normalized = re.sub(r"\s+", " ", app_name.strip().lower())
+    normalized = normalized.replace("whats up", "whatsapp")
+    normalized = normalized.replace("whatsup", "whatsapp")
+    normalized = normalized.replace("watsup", "whatsapp")
+    normalized = normalized.replace("whastapp", "whatsapp")
+    normalized = APP_NAME_ALIASES.get(normalized, normalized)
+    return normalized
+
+
+def _normalize_amma_only_contact(contact: str) -> str:
+    normalized = re.sub(r"\s+", " ", contact.strip().lower())
+    normalized = re.sub(r"\b(?:on|in|through|via)\s+whatsapp(?:\s+desktop|\s+app|\s+website|\s+web)?\b", "", normalized)
+    normalized = normalized.replace("whatsapp", "").replace("desktop", "").replace("website", "").replace("web", "").strip()
+    normalized = re.sub(r"[^a-z\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = AMMA_ONLY_CONTACT_ALIASES.get(normalized, normalized.title())
+    if normalized != "Amma":
+        raise ValueError(
+            "For safety, this build only allows WhatsApp message automation to the Amma contact."
+        )
+    return normalized
+
+
+def _get_whatsapp_display_target(contact: str) -> str:
+    if contact == "Amma":
+        return "Amma"
+    display_options = WHATSAPP_CONTACT_DISPLAY_NAMES.get(contact, [contact])
+    return display_options[0]
+
+
+def _get_whatsapp_search_query(contact: str) -> str:
+    if contact == "Amma":
+        return "Amma"
+    return re.sub(r"[^\w\s]", "", contact).strip() or contact
+
+
+def _normalize_visible_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").strip().lower())
+
+
+def _get_window_bounds(window) -> tuple[int, int, int, int]:
+    if hasattr(window, "rectangle"):
+        rect = window.rectangle()
+        return (
+            int(rect.left),
+            int(rect.top),
+            int(rect.right - rect.left),
+            int(rect.bottom - rect.top),
+        )
+    return int(window.left), int(window.top), int(window.width), int(window.height)
+
+
+def _wait_for_whatsapp_window(timeout_seconds: float = 12.0):
+    deadline = time.time() + timeout_seconds
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            windows = []
+            for window in Desktop(backend="uia").windows():
+                try:
+                    title = (window.window_text() or "").strip()
+                    class_name = (window.element_info.class_name or "").strip()
+                except Exception:
+                    continue
+                if class_name != "WinUIDesktopWin32WindowClass":
+                    continue
+                if not title or not title.lower().endswith("whatsapp"):
+                    continue
+                windows.append(window)
+            if windows:
+                windows.sort(
+                    key=lambda candidate: (
+                        0 if (candidate.window_text() or "").strip().lower() == "whatsapp" else 1,
+                        -((_get_window_bounds(candidate)[2]) * (_get_window_bounds(candidate)[3])),
+                    )
+                )
+                window = windows[0]
+                try:
+                    if hasattr(window, "restore"):
+                        window.restore()
+                except Exception:
+                    pass
+                try:
+                    window.set_focus()
+                except Exception:
+                    try:
+                        window.click_input()
+                    except Exception:
+                        pass
+                return window
+        except Exception as exc:
+            last_error = exc
+        time.sleep(0.35)
+    raise RuntimeError(f"WhatsApp window did not become ready in time: {last_error}")
+
+
+def _click_window_ratio(window, x_ratio: float, y_ratio: float) -> tuple[int, int]:
+    left, top, width, height = _get_window_bounds(window)
+    if width <= 0 or height <= 0:
+        raise RuntimeError("WhatsApp window does not have a usable size yet.")
+    x = left + int(width * x_ratio)
+    y = top + int(height * y_ratio)
+    pyautogui.click(x, y)
+    return x, y
+
+
+def _click_element_center(element) -> bool:
+    try:
+        rect = element.rectangle()
+        x = int((rect.left + rect.right) / 2)
+        y = int((rect.top + rect.bottom) / 2)
+        pyautogui.click(x, y)
+        return True
+    except Exception:
+        return False
+
+
+def _get_element_rectangle(element):
+    try:
+        return element.rectangle()
+    except Exception:
+        return None
+
+
+def _clear_active_field() -> None:
+    pyautogui.hotkey("ctrl", "a")
+    pyautogui.sleep(0.08)
+    pyautogui.press("backspace")
+
+
+def _iter_descendants(window):
+    try:
+        return list(window.descendants())
+    except Exception:
+        return []
+
+
+def _iter_element_ancestors(element, max_depth: int = 6):
+    current = element
+    seen_ids: set[int] = set()
+    for _ in range(max_depth):
+        if current is None:
+            break
+        object_id = id(current)
+        if object_id in seen_ids:
+            break
+        seen_ids.add(object_id)
+        yield current
+        try:
+            current = current.parent()
+        except Exception:
+            break
+
+
+def _is_left_results_pane(window, rect) -> bool:
+    if rect is None:
+        return False
+    left, top, width, height = _get_window_bounds(window)
+    if width <= 0 or height <= 0:
+        return False
+    x_center = (rect.left + rect.right) / 2
+    y_center = (rect.top + rect.bottom) / 2
+    x_min = left + (width * 0.03)
+    x_max = left + (width * 0.38)
+    y_min = top + (height * 0.18)
+    y_max = top + (height * 0.86)
+    return x_min <= x_center <= x_max and y_min <= y_center <= y_max
+
+
+def _find_whatsapp_contact_element(window, display_options: list[str]):
+    normalized_targets = [_normalize_visible_text(option) for option in display_options if option]
+    best_match = None
+    best_score = -1
+
+    for element in _iter_descendants(window):
+        try:
+            text = (element.window_text() or "").strip()
+            if not text:
+                continue
+            normalized_text = _normalize_visible_text(text)
+            if not normalized_text:
+                continue
+            control_type = (element.element_info.control_type or "").lower()
+            rect = _get_element_rectangle(element)
+        except Exception:
+            continue
+
+        if not _is_left_results_pane(window, rect):
+            continue
+
+        for target in normalized_targets:
+            if not target:
+                continue
+            if normalized_text == target:
+                score = 140
+            elif target in normalized_text or normalized_text in target:
+                score = 80
+            else:
+                continue
+
+            if control_type in {"listitem", "dataitem"}:
+                score += 35
+            elif control_type == "text":
+                score += 18
+            if rect is not None:
+                row_width = rect.right - rect.left
+                row_height = rect.bottom - rect.top
+                if row_width > 120:
+                    score += 12
+                if row_height > 24:
+                    score += 8
+            if best_match is None or score > best_score:
+                best_match = element
+                best_score = score
+
+    return best_match
+
+
+def _pick_whatsapp_click_target(window, element):
+    best_candidate = None
+    best_score = -1
+
+    for candidate in _iter_element_ancestors(element):
+        rect = _get_element_rectangle(candidate)
+        if not _is_left_results_pane(window, rect):
+            continue
+        try:
+            control_type = (candidate.element_info.control_type or "").lower()
+        except Exception:
+            control_type = ""
+        row_width = (rect.right - rect.left) if rect is not None else 0
+        row_height = (rect.bottom - rect.top) if rect is not None else 0
+        score = 0
+        if control_type in {"listitem", "dataitem"}:
+            score += 50
+        elif control_type == "pane":
+            score += 25
+        elif control_type == "text":
+            score += 10
+        score += min(int(row_width / 20), 30)
+        score += min(int(row_height / 10), 20)
+        if score > best_score:
+            best_candidate = candidate
+            best_score = score
+
+    return best_candidate or element
+
+
+async def _wait_for_whatsapp_contact_match(window, display_options: list[str], timeout_seconds: float = 3.2):
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        match = _find_whatsapp_contact_element(window, display_options)
+        if match is not None:
+            return match
+        await asyncio.sleep(0.12)
+    return None
+
+
+def _is_whatsapp_chat_open(window, display_options: list[str]) -> bool:
+    normalized_targets = {_normalize_visible_text(option) for option in display_options if option}
+    left, top, width, height = _get_window_bounds(window)
+    if width <= 0 or height <= 0:
+        return False
+    x_min = left + (width * 0.22)
+    x_max = left + (width * 0.70)
+    y_min = top + (height * 0.02)
+    y_max = top + (height * 0.18)
+
+    for element in _iter_descendants(window):
+        try:
+            text = (element.window_text() or "").strip()
+            if not text:
+                continue
+            normalized_text = _normalize_visible_text(text)
+            if not normalized_text:
+                continue
+            rect = _get_element_rectangle(element)
+            if rect is None:
+                continue
+        except Exception:
+            continue
+
+        x_center = (rect.left + rect.right) / 2
+        y_center = (rect.top + rect.bottom) / 2
+        if not (x_min <= x_center <= x_max and y_min <= y_center <= y_max):
+            continue
+
+        for target in normalized_targets:
+            if normalized_text == target or target in normalized_text:
+                return True
+    return False
+
+
+async def _open_whatsapp_contact_guarded(contact: str) -> dict[str, str]:
+    cleaned_contact = _normalize_amma_only_contact(contact)
+    display_options = WHATSAPP_CONTACT_DISPLAY_NAMES.get(cleaned_contact, [cleaned_contact])
+    display_target = _get_whatsapp_display_target(cleaned_contact)
+    search_query = _get_whatsapp_search_query(cleaned_contact)
+
+    _launch_windows_app("whatsapp")
+    await asyncio.sleep(1.2)
+    window = _wait_for_whatsapp_window()
+    await asyncio.sleep(0.18)
+
+    # Focus the left search box first; fall back to Ctrl+F if needed.
+    _click_window_ratio(window, 0.13, 0.14)
+    await asyncio.sleep(0.14)
+    pyautogui.hotkey("ctrl", "f")
+    await asyncio.sleep(0.14)
+    _clear_active_field()
+    await asyncio.sleep(0.05)
+    pyautogui.write(search_query, interval=0.02)
+
+    match = await _wait_for_whatsapp_contact_match(window, display_options)
+    if match is None:
+        raise RuntimeError(
+            f"WhatsApp did not show a safe contact match for '{display_target}'. Refusing to send."
+        )
+
+    clicked = False
+    click_target = _pick_whatsapp_click_target(window, match)
+    for candidate in (click_target, match):
+        if candidate is None:
+            continue
+        try:
+            candidate.click_input()
+            clicked = True
+            break
+        except Exception:
+            if _click_element_center(candidate):
+                clicked = True
+                break
+
+    if not clicked:
+        raise RuntimeError(
+            f"WhatsApp found '{display_target}' but could not safely click the result row."
+        )
+
+    await asyncio.sleep(0.35)
+    if not _is_whatsapp_chat_open(window, display_options):
+        pyautogui.press("enter")
+        await asyncio.sleep(0.35)
+
+    if not _is_whatsapp_chat_open(window, display_options):
+        raise RuntimeError(
+            f"WhatsApp did not open the verified '{display_target}' chat header after selecting the result."
+        )
+
+    return {
+        "contact": cleaned_contact,
+        "display_target": display_target,
+        "search_query": search_query,
+    }
+
+
+def _resolve_launch_commands(app_name: str, commands: list[str]) -> list[str]:
+    resolved: list[str] = []
+    seen: set[str] = set()
+
+    for command in commands:
+        candidate = command
+        lower_candidate = command.lower()
+        if not (lower_candidate.startswith("shell:") or re.match(r"^[a-z][a-z0-9+.-]*:$", lower_candidate)):
+            registry_match = _lookup_windows_app_path(Path(command).name)
+            if registry_match:
+                candidate = registry_match
+        key = candidate.lower()
+        if key not in seen:
+            seen.add(key)
+            resolved.append(candidate)
+
+    for executable_name in APP_REGISTRY_EXECUTABLES.get(app_name, []):
+        registry_match = _lookup_windows_app_path(executable_name)
+        if registry_match and registry_match.lower() not in seen:
+            seen.add(registry_match.lower())
+            resolved.append(registry_match)
+
+    return resolved
+
+
 def _launch_windows_app(app_name: str) -> str:
-    normalized = app_name.strip().lower()
+    normalized = _normalize_app_name(app_name)
     if not normalized:
         raise ValueError("An app name is required.")
 
-    commands = APP_LAUNCH_COMMANDS.get(normalized, [normalized])
+    commands = _resolve_launch_commands(normalized, APP_LAUNCH_COMMANDS.get(normalized, [normalized]))
+    search_label = START_MENU_FRIENDLY_NAMES.get(normalized, app_name.strip())
     last_error: Exception | None = None
 
     for command in commands:
         try:
-            resolved = shutil.which(command) or command
-            subprocess.Popen([resolved], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            lower_command = command.lower()
+            if lower_command.startswith("start "):
+                start_target = command[6:].strip()
+                subprocess.Popen(
+                    ["cmd.exe", "/c", "start", "", start_target],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return normalized
+            if lower_command.startswith("shell:") or re.match(r"^[a-z][a-z0-9+.-]*:$", lower_command):
+                if lower_command.startswith("shell:"):
+                    subprocess.Popen(
+                        ["explorer.exe", command],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    if hasattr(os, "startfile"):
+                        os.startfile(command)  # type: ignore[attr-defined]
+                    else:
+                        subprocess.Popen(
+                            ["cmd.exe", "/c", "start", "", command],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+            else:
+                resolved = shutil.which(command) or command
+                subprocess.Popen([resolved], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return normalized
         except Exception as exc:  # pragma: no cover - best effort on host desktop
             last_error = exc
 
+    # Fall back to the Windows Start menu search so friendly names like
+    # "Word", "Settings", or installed local apps can still launch.
+    try:
+        pyautogui.press("win")
+        pyautogui.sleep(0.5)
+        pyautogui.write(search_label, interval=0.03)
+        pyautogui.sleep(0.6)
+        pyautogui.press("enter")
+        return normalized
+    except Exception as exc:  # pragma: no cover - best effort on host desktop
+        last_error = exc
+
     raise RuntimeError(f"Could not open app '{app_name}': {last_error}")
+
+
+async def _whatsapp_open_contact_and_send(contact: str, message: str) -> dict[str, str | bool]:
+    cleaned_message = message.strip()
+    if not cleaned_message:
+        raise ValueError("A message is required for WhatsApp automation.")
+
+    contact_payload = await _open_whatsapp_contact_guarded(contact)
+    window = _wait_for_whatsapp_window()
+
+    # Click the composer separately so the message never bleeds into the search field.
+    _click_window_ratio(window, 0.57, 0.955)
+    await asyncio.sleep(0.28)
+    pyautogui.write(cleaned_message, interval=0.025)
+    await asyncio.sleep(0.12)
+    pyautogui.press("enter")
+
+    return {
+        "success": True,
+        "message": (
+            f"Opened WhatsApp, selected {contact_payload['contact']} using the guarded search flow, "
+            f"and sent the message."
+        ),
+        "note": (
+            f"Safety guard used the exact WhatsApp search target '{contact_payload['display_target']}' "
+            "before clicking the result row and the message composer."
+        ),
+    }
+
+
+async def _whatsapp_open_contact(contact: str) -> dict[str, str | bool]:
+    contact_payload = await _open_whatsapp_contact_guarded(contact)
+
+    return {
+        "success": True,
+        "message": f"Opened WhatsApp and focused the chat for {contact_payload['contact']}.",
+        "note": f"Used the exact search target '{contact_payload['display_target']}' before opening the chat.",
+    }
+
+
+def _launch_windows_app_with_url(app_name: str, target_url: str) -> tuple[str, str]:
+    normalized = _normalize_app_name(app_name)
+    if not normalized:
+        raise ValueError("A browser app name is required.")
+
+    url = target_url.strip()
+    if not url:
+        raise ValueError("A website URL is required.")
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        url = f"https://{url}"
+
+    commands = _resolve_launch_commands(normalized, APP_LAUNCH_COMMANDS.get(normalized, [normalized]))
+    last_error: Exception | None = None
+
+    for command in commands:
+        lower_command = command.lower()
+        if lower_command.startswith("shell:"):
+            continue
+        if lower_command.startswith("start "):
+            start_target = command[6:].strip()
+            try:
+                subprocess.Popen(
+                    ["cmd.exe", "/c", "start", "", start_target, url],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return normalized, url
+            except Exception as exc:  # pragma: no cover - best effort on host desktop
+                last_error = exc
+            continue
+        if re.match(r"^[a-z][a-z0-9+.-]*:$", lower_command):
+            try:
+                subprocess.Popen(
+                    ["cmd.exe", "/c", "start", "", f"{command}{url}"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return normalized, url
+            except Exception as exc:  # pragma: no cover - best effort on host desktop
+                last_error = exc
+            continue
+        try:
+            resolved = shutil.which(command) or command
+            subprocess.Popen([resolved, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return normalized, url
+        except Exception as exc:  # pragma: no cover - best effort on host desktop
+            last_error = exc
+
+    friendly = START_MENU_FRIENDLY_NAMES.get(normalized, app_name.strip())
+    raise RuntimeError(f"Could not open website '{url}' in '{friendly}': {last_error}")
 
 
 def _resolve_folder_path(target: str | None, payload: dict | None = None) -> Path:
@@ -212,6 +901,23 @@ async def execute_desktop_command(action: str, target: str = None, payload: dict
                 "message": f"Opened {opened_app}.",
                 "note": "Window focus and background behavior still depend on the operating system.",
             }
+
+        if action == "open_app_url":
+            app_name = target or payload.get("app_name", "")
+            target_url = payload.get("url", "")
+            opened_app, normalized_url = _launch_windows_app_with_url(app_name, target_url)
+            return {
+                "success": True,
+                "message": f"Opened {normalized_url} in {opened_app}.",
+                "note": "Window focus and background behavior still depend on the operating system.",
+            }
+
+        if action == "whatsapp_send_message":
+            contact = str(payload.get("contact", target or "")).strip()
+            message_text = str(payload.get("message", payload.get("text", ""))).strip()
+            if message_text:
+                return await _whatsapp_open_contact_and_send(contact, message_text)
+            return await _whatsapp_open_contact(contact)
 
         if action == "open_path":
             path = _resolve_folder_path(target, payload)

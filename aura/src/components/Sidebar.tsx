@@ -22,6 +22,7 @@ import {
   PlugZap,
   Globe,
   Trash2,
+  LogOut,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -117,6 +118,22 @@ export default function Sidebar({
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState('');
   const [recentConversations, setRecentConversations] = useState<RecentConversation[]>([]);
+  const [profile, setProfile] = useState<{ full_name: string; username?: string } | null>(null);
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      try {
+        const res = await fetch('http://localhost:8000/api/profile');
+        if (res.ok) {
+          const data = await res.json();
+          setProfile(data.profile);
+        }
+      } catch (err) {
+        console.error('Failed to fetch profile:', err);
+      }
+    };
+    fetchProfile();
+  }, []);
 
   useEffect(() => {
     const loadRecentConversations = () => {
@@ -512,17 +529,31 @@ export default function Sidebar({
         )}
         {/* User avatar */}
         <div
-          className={`flex items-center gap-2.5 px-2.5 py-2 mt-1 rounded-lg hover:bg-muted cursor-pointer transition-colors ${collapsed ? 'justify-center' : ''}`}
+          className={`flex items-center justify-between px-2.5 py-2 mt-1 rounded-lg hover:bg-muted transition-colors ${collapsed ? 'flex-col gap-2' : ''}`}
         >
           <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#6C47FF] to-[#00C9A7] flex items-center justify-center text-white text-xs font-semibold shrink-0">
             A
           </div>
           {!collapsed && (
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-foreground truncate">Arjun Mehta</p>
+              <p className="text-xs font-medium text-foreground truncate">{profile?.username || profile?.full_name || 'Arjun Mehta'}</p>
               <p className="text-xs text-muted-foreground truncate">Pro Plan</p>
             </div>
           )}
+          <button
+            onClick={() => {
+              sessionStorage.clear();
+              localStorage.clear();
+              toast.success('System override: Terminating session...');
+              setTimeout(() => {
+                window.location.assign('/sign-up-login-screen');
+              }, 800);
+            }}
+            className="p-1.5 text-muted-foreground hover:text-red-500 hover:bg-red-500/10 rounded-md transition-colors"
+            title="Log out"
+          >
+            <LogOut size={16} />
+          </button>
         </div>
       </div>
     </aside>
