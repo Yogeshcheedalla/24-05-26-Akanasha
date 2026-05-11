@@ -177,6 +177,11 @@ interface SpeakerProfileData {
   timestamp: string | null;
 }
 
+type PendingSpeakerIntro = {
+  displayName: string | null;
+  relationship: string | null;
+};
+
 function detectUserTone(text: string): AssistantEmotion {
   const normalized = text.toLowerCase();
   if (/(amazing|awesome|love|excited|great|nice|happy)/.test(normalized)) return 'happy';
@@ -208,6 +213,30 @@ function extractSpeakerIntro(text: string) {
   const relationshipMatch = lowered.match(
     /\b(mother|mom|mummy|amma|father|dad|nanna|brother|sister|wife|husband|friend|owner|self|me|myself|teacher|colleague|cousin|uncle|aunty|aunt|guest)\b/i
   );
+  const relationshipWords = new Set([
+    'mother',
+    'mom',
+    'mummy',
+    'father',
+    'dad',
+    'nanna',
+    'brother',
+    'sister',
+    'wife',
+    'husband',
+    'friend',
+    'owner',
+    'self',
+    'me',
+    'myself',
+    'teacher',
+    'colleague',
+    'cousin',
+    'uncle',
+    'aunty',
+    'aunt',
+    'guest',
+  ]);
 
   const namePatterns = [
     /\bmy name is\s+([a-z][a-z\s'-]{1,40})/i,
@@ -227,7 +256,11 @@ function extractSpeakerIntro(text: string) {
     }
   }
 
-  if (!displayName && /^[a-z][a-z\s'-]{1,40}$/i.test(normalized)) {
+  if (
+    !displayName &&
+    /^[a-z][a-z\s'-]{1,40}$/i.test(normalized) &&
+    (!relationshipWords.has(lowered) || lowered === 'amma')
+  ) {
     displayName = normalized.trim();
   }
 
@@ -303,6 +336,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   const [speakerProfiles, setSpeakerProfiles] = useState<SpeakerProfileData[]>([]);
   const [activeSpeaker, setActiveSpeaker] = useState<SpeakerProfileData | null>(null);
   const [awaitingSpeakerIntro, setAwaitingSpeakerIntro] = useState(false);
+  const [pendingSpeakerIntro, setPendingSpeakerIntro] = useState<PendingSpeakerIntro | null>(null);
   const [responseText, setResponseText] = useState(
     'Hello! I am Akansha. I can chat, speak, listen, and help you plan your day naturally.'
   );
@@ -569,9 +603,15 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
 
       if (inputMode === 'voice' && awaitingSpeakerIntro) {
         const intro = extractSpeakerIntro(trimmed);
-        if (!intro.displayName) {
+        const nextIntro = {
+          displayName: intro.displayName || pendingSpeakerIntro?.displayName || null,
+          relationship: intro.relationship || pendingSpeakerIntro?.relationship || null,
+        };
+
+        if (!nextIntro.displayName) {
           const followUp =
             'I heard you, but I still need your name. Say something like: my name is Amma.';
+          setPendingSpeakerIntro(nextIntro);
           setAssistantEmotion('thinking');
           setResponseText(followUp);
           void speak(followUp, {
@@ -583,8 +623,9 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           return;
         }
 
-        if (!intro.relationship) {
-          const followUp = `Thanks ${intro.displayName}. Now tell me your relationship to Yogesh, like mother, father, friend, or owner.`;
+        if (!nextIntro.relationship) {
+          const followUp = `Thanks ${nextIntro.displayName}. Now tell me your relationship to Yogesh, like mother, father, friend, or owner.`;
+          setPendingSpeakerIntro(nextIntro);
           setAssistantEmotion('thinking');
           setResponseText(followUp);
           void speak(followUp, {
@@ -601,8 +642,8 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              display_name: intro.displayName,
-              relationship_to_owner: intro.relationship,
+              display_name: nextIntro.displayName,
+              relationship_to_owner: nextIntro.relationship,
               notes: `Voice onboarding from ${inputMode} mode`,
             }),
           });
@@ -619,6 +660,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           });
           setActiveSpeaker(nextSpeaker);
           setAwaitingSpeakerIntro(false);
+          setPendingSpeakerIntro(null);
 
           const confirmation = `Nice to meet you, ${nextSpeaker.display_name}. I will remember that you are ${nextSpeaker.relationship_to_owner ?? 'connected to Yogesh'} and I will respond with ${speakerAccessLabel(nextSpeaker.access_level)}.`;
           setAssistantEmotion('happy');
@@ -655,6 +697,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         const introPrompt =
           'Who are you? I am hearing you for the first time. Tell me your name and your relationship to Yogesh so I can remember your voice profile.';
         setAwaitingSpeakerIntro(true);
+        setPendingSpeakerIntro(null);
         setAssistantEmotion('thinking');
         setResponseText(introPrompt);
         void speak(introPrompt, {
@@ -1044,9 +1087,11 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
     },
     [
       assistantMode,
+      awaitingSpeakerIntro,
       backgroundListening,
       clearTranscript,
       isSpeaking,
+      pendingSpeakerIntro,
       queueReadySpeech,
       sessionId,
       startListening,

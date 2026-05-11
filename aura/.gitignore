@@ -1,42 +1,9 @@
-# AkanshaLive Project - Aura Gitignore
-# Node modules
-node_modules/
-package-lock.json
+# Aura Sub-directory Gitignore
+# Rules are primarily managed in the root .gitignore
 
-# Environment variables and databases
+node_modules/
 .env
 *.db
-
-# Next.js build output
 .next/
-out/
-
-# Production build
-build/
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# OS-specific files
-.DS_Store
-Thumbs.db
-
-# Vercel deployment
-.vercel/
-
-# Optional: if using TypeScript
+*.log
 *.tsbuildinfo
-
-# Optional: if using testing tools
-coverage/
-jest-test-results.json
-
-# Optional: if using IDEs
-.vscode/
-.idea/
-
-# Optional: if using TurboRepo or monorepo
-turbo/

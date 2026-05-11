@@ -1347,6 +1347,54 @@ def _clean_contact_name(value: str | None) -> str | None:
     return cleaned or None
 
 
+def _normalize_whatsapp_allowed_contact(contact: str | None) -> str | None:
+    if not contact:
+        return None
+
+    normalized = contact.lower()
+    normalized = re.sub(
+        r"\b(?:on|in|through|via)\s+(?:the\s+)?(?:whatsapp\s+)?(?:desktop|desktop app|app|website|web|web browser|browser)\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(r"\b(?:whatsapp|desktop|app|website|web|browser)\b", "", normalized)
+    normalized = re.sub(r"[^a-z\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    allowed_aliases = {
+        "amma": "Amma",
+        "ammaa": "Amma",
+        "ammah": "Amma",
+        "amm": "Amma",
+        "am ma": "Amma",
+        "mummy": "Amma",
+        "mumyy": "Amma",
+        "mommy": "Amma",
+        "mom": "Amma",
+        "mother": "Amma",
+        "mamma": "Amma",
+        "mumy": "Amma",
+    }
+    return allowed_aliases.get(normalized)
+
+
+def _whatsapp_safety_clarification(contact: str | None) -> dict[str, Any] | None:
+    if not contact:
+        return None
+
+    allowed_contact = _normalize_whatsapp_allowed_contact(contact)
+    if allowed_contact:
+        return None
+
+    return {
+        "summary": (
+            "For safety, WhatsApp message automation is limited to the Amma contact in this build. "
+            "I will not open or send to another WhatsApp chat from automation."
+        ),
+        "steps": [],
+        "needs_clarification": True,
+    }
+
+
 def _clean_message_body(value: str | None) -> str | None:
     if not value:
         return None
@@ -1623,6 +1671,11 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
     created_folder_name = extract_create_folder_name(normalized) or "Converted_PPTs"
     shell_command, shell_name = extract_run_command(normalized)
     send_message_text, send_message_contact = extract_send_message_details(normalized)
+    if send_message_contact and (dual_mode_app == "whatsapp" or desktop_app == "whatsapp" or "whatsapp" in lowered):
+        whatsapp_safety_response = _whatsapp_safety_clarification(send_message_contact)
+        if whatsapp_safety_response:
+            return whatsapp_safety_response
+        send_message_contact = _normalize_whatsapp_allowed_contact(send_message_contact) or send_message_contact
     requested_open_target = extract_open_target(normalized)
     typed_match = re.search(r"\b(?:type|write|send)\b\s+(.+)", normalized, flags=re.IGNORECASE)
     typed_instruction = None
