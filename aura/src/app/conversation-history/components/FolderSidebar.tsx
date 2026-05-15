@@ -3,14 +3,16 @@
 import React, { useState } from 'react';
 import { Folder, FolderOpen, Star, Archive, Share2, Plus, MessageSquare, Trash2 } from 'lucide-react';
 import type { Conversation } from './ConversationHistoryScreen';
+import type { ConversationFolder } from '@/lib/chatHistoryMetadata';
 import { toast } from 'sonner';
-import Icon from '@/components/ui/AppIcon';
-
 
 interface FolderSidebarProps {
   selectedFolder: string | null;
   onSelectFolder: (folder: string | null) => void;
   conversations: Conversation[];
+  folders: ConversationFolder[];
+  onCreateFolder: (name: string) => void;
+  onEmptyTrash: () => void;
 }
 
 const SYSTEM_FOLDERS = [
@@ -20,13 +22,14 @@ const SYSTEM_FOLDERS = [
   { key: 'archived', label: 'Archived', icon: Archive },
 ];
 
-const USER_FOLDERS = [
-  { id: 'folder-work', name: 'Work', color: 'bg-blue-500' },
-  { id: 'folder-research', name: 'Research', color: 'bg-purple-500' },
-  { id: 'folder-personal', name: 'Personal', color: 'bg-green-500' },
-];
-
-export default function FolderSidebar({ selectedFolder, onSelectFolder, conversations }: FolderSidebarProps) {
+export default function FolderSidebar({
+  selectedFolder,
+  onSelectFolder,
+  conversations,
+  folders,
+  onCreateFolder,
+  onEmptyTrash,
+}: FolderSidebarProps) {
   const [newFolderMode, setNewFolderMode] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
 
@@ -39,11 +42,17 @@ export default function FolderSidebar({ selectedFolder, onSelectFolder, conversa
   };
 
   const handleCreateFolder = () => {
-    if (newFolderName.trim()) {
-      toast.success(`Folder "${newFolderName}" created`);
-      setNewFolderName('');
-      setNewFolderMode(false);
+    const name = newFolderName.trim();
+    if (!name) return;
+
+    if (folders.some((folder) => folder.name.toLowerCase() === name.toLowerCase())) {
+      toast.error(`Folder "${name}" already exists`);
+      return;
     }
+
+    onCreateFolder(name);
+    setNewFolderName('');
+    setNewFolderMode(false);
   };
 
   return (
@@ -89,7 +98,7 @@ export default function FolderSidebar({ selectedFolder, onSelectFolder, conversa
             </button>
           </div>
 
-          {USER_FOLDERS.map(folder => {
+          {folders.map(folder => {
             const count = getCount(folder.id);
             const isActive = selectedFolder === folder.id;
             return (
@@ -132,7 +141,10 @@ export default function FolderSidebar({ selectedFolder, onSelectFolder, conversa
       </div>
 
       <div className="p-2 border-t border-border">
-        <button className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-muted-foreground hover:bg-muted hover:text-red-500 transition-colors">
+        <button
+          onClick={onEmptyTrash}
+          className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-muted-foreground hover:bg-muted hover:text-red-500 transition-colors"
+        >
           <Trash2 size={13} />
           Empty trash
         </button>

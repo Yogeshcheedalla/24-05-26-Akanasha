@@ -33,15 +33,63 @@ interface ConversationSidebarProps {
   onSessionChange: (id: string) => void;
 }
 
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function formatSidebarDate(date: Date) {
+  return date.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function formatConversationTime(date: Date) {
+  return date.toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+function formatConversationMeta(date: Date) {
+  return `${formatSidebarDate(date)} · ${formatConversationTime(date)}`;
+}
+
+function getConversationGroups(items: HistoryItem[]) {
+  const today = startOfDay(new Date());
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const groups = new Map<string, HistoryItem[]>();
+
+  items.forEach((item) => {
+    const itemDay = startOfDay(item.timestamp);
+    const label =
+      itemDay.getTime() === today.getTime()
+        ? `Today · ${formatSidebarDate(item.timestamp)}`
+        : itemDay.getTime() === yesterday.getTime()
+          ? `Yesterday · ${formatSidebarDate(item.timestamp)}`
+          : formatSidebarDate(item.timestamp);
+
+    groups.set(label, [...(groups.get(label) ?? []), item]);
+  });
+
+  return Array.from(groups.entries()).map(([label, groupedItems]) => ({
+    label,
+    items: groupedItems,
+  }));
+}
+
 export default function ConversationSidebar({
   activeSessionId,
   onNewChat,
   onSessionChange,
 }: ConversationSidebarProps) {
   const [search, setSearch] = useState('');
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
-    new Set(['Today', 'Yesterday', 'Older'])
-  );
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
@@ -149,7 +197,7 @@ export default function ConversationSidebar({
   };
 
   const toggleGroup = (id: string) => {
-    setExpandedGroups((prev) => {
+    setCollapsedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -161,25 +209,7 @@ export default function ConversationSidebar({
   const visibleHistoryItems = historyItems.some((item) => item.id === activeSessionId)
     ? historyItems
     : [{ id: activeSessionId, title: 'New chat', timestamp: new Date() }, ...historyItems];
-
-  const now = new Date();
-  const todayItems = visibleHistoryItems.filter(
-    (i) => i.timestamp.toDateString() === now.toDateString()
-  );
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayItems = visibleHistoryItems.filter(
-    (i) => i.timestamp.toDateString() === yesterday.toDateString()
-  );
-  const olderItems = visibleHistoryItems.filter(
-    (i) => i.timestamp < yesterday && i.timestamp.toDateString() !== yesterday.toDateString()
-  );
-
-  const groups = [
-    { label: 'Today', items: todayItems },
-    { label: 'Yesterday', items: yesterdayItems },
-    { label: 'Older', items: olderItems },
-  ];
+  const groups = getConversationGroups(visibleHistoryItems);
 
   return (
     <div className="flex flex-col h-full">
@@ -220,7 +250,7 @@ export default function ConversationSidebar({
           );
           if (filtered.length === 0) return null;
 
-          const isExpanded = expandedGroups.has(group.label);
+          const isExpanded = !collapsedGroups.has(group.label);
 
           return (
             <div key={`group-${group.label}`} className="mb-3">
@@ -281,11 +311,16 @@ export default function ConversationSidebar({
                         </form>
                       ) : (
                         <div className="flex items-start gap-2">
-                          <p
-                            className={`flex-1 text-xs font-medium truncate ${activeSessionId === conv.id ? 'text-foreground' : ''}`}
-                          >
-                            {conv.title}
-                          </p>
+                          <div className="min-w-0 flex-1">
+                            <p
+                              className={`text-xs font-medium truncate ${activeSessionId === conv.id ? 'text-foreground' : ''}`}
+                            >
+                              {conv.title}
+                            </p>
+                            <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+                              {formatConversationMeta(conv.timestamp)}
+                            </p>
+                          </div>
                           <button
                             type="button"
                             onClick={(event) => startRenaming(event, conv)}

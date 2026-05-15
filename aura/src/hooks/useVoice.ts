@@ -6,6 +6,17 @@ export type VoiceGender = 'male' | 'female';
 export type VoiceTone = 'friendly' | 'professional' | 'energetic' | 'calm';
 export type VoiceLanguagePreference = 'telugu_english' | 'english' | 'hindi';
 
+export interface VoiceFrequencySignature {
+  averageFrequencyHz: number;
+  spectralCentroidHz: number;
+  lowBandEnergy: number;
+  midBandEnergy: number;
+  highBandEnergy: number;
+  rmsLevel: number;
+  sampleCount: number;
+  capturedAt: string;
+}
+
 interface VoiceOption {
   id: string;
   name: string;
@@ -21,6 +32,7 @@ interface SpeakOptions {
 }
 interface QueueSpeakOptions extends SpeakOptions {
   queue?: boolean;
+  preferBrowser?: boolean;
 }
 
 interface QueuedSpeechItem {
@@ -53,6 +65,25 @@ const TONE_CONFIG: Record<VoiceTone, { rate: number; pitch: number; volume: numb
   energetic: { rate: 1.08, pitch: 1.12, volume: 1 },
   calm: { rate: 0.9, pitch: 0.94, volume: 0.88 },
 };
+
+const FAST_BROWSER_SPEECH_CHAR_LIMIT = 180;
+
+function shouldUseFastBrowserSpeech(text: string, options?: QueueSpeakOptions | SpeakOptions) {
+  if (!options || !('queue' in options)) {
+    return false;
+  }
+
+  const languageMode = detectVoiceLanguageMode(text, options.voiceLanguage ?? 'english');
+  if (languageMode !== 'english') {
+    return false;
+  }
+
+  return Boolean(
+    options.queue &&
+      (('preferBrowser' in options && options.preferBrowser) ||
+        text.trim().length <= FAST_BROWSER_SPEECH_CHAR_LIMIT)
+  );
+}
 
 function inferGender(name: string): VoiceGender {
   const normalized = name.toLowerCase();
@@ -112,6 +143,20 @@ const FEMALE_SAMPLE_OPTION: VoiceOption = {
 };
 const SPEECH_INTERRUPT_PATTERN =
   /\b(stop|wait|pause|hold on|enough|silent|mute|aagu|aapu|ruko|ruk jao)\b|ఆపు|ఆగు|रुको|बस/i;
+
+const INTERRUPTION_RESTART_DELAY_MS = 80;
+const LISTENING_KEEPALIVE_MS = 650;
+
+function recognitionLanguagesFor(preference: VoiceLanguagePreference) {
+  if (preference === 'hindi') return ['hi-IN', 'en-IN'];
+  if (preference === 'telugu_english') return ['en-IN', 'te-IN', 'hi-IN'];
+  return ['en-IN', 'en-US', 'hi-IN', 'te-IN'];
+}
+
+function preferredRecognitionLanguage(preference: VoiceLanguagePreference, index = 0) {
+  const languages = recognitionLanguagesFor(preference);
+  return languages[index % languages.length] ?? languages[0] ?? 'en-IN';
+}
 
 const TELUGU_VISEMES: Record<string, VisemeCode> = {
   '\u0C05': 1, '\u0C06': 1, '\u0C3E': 1,
@@ -322,12 +367,10 @@ function detectVoiceLanguageMode(
   text: string,
   preference: VoiceLanguagePreference
 ): VoiceLanguageMode {
-  if (preference === 'english') return 'english';
-  if (preference === 'hindi') return 'hindi';
-
   const teluguChars = (text.match(/[\u0C00-\u0C7F]/g) ?? []).length;
   const hindiChars = (text.match(/[\u0900-\u097F]/g) ?? []).length;
   const latinChars = (text.match(/[A-Za-z]/g) ?? []).length;
+  const words = new Set((text.toLowerCase().match(/[a-z]+/g) ?? []));
 
   if (hindiChars > 0) {
     return 'hindi';
@@ -338,6 +381,28 @@ function detectVoiceLanguageMode(
   if (teluguChars > 0) {
     return 'telugu';
   }
+  if (preference === 'hindi') return 'hindi';
+  if (preference === 'telugu_english') return 'mixed';
+  if (
+    ['namaste', 'hindi', 'kaise', 'kya', 'mujhe', 'aap', 'hai', 'nahi', 'batao'].some((word) =>
+      words.has(word)
+    )
+  ) {
+    return 'hindi';
+  }
+  if (
+    ['telugu', 'anna', 'andi', 'naku', 'naaku', 'meeru', 'ela', 'unnaru', 'cheppu'].some((word) =>
+      words.has(word)
+    )
+  ) {
+    return 'mixed';
+  }
+  return 'english';
+}
+
+function preferredLanguageMode(preference: VoiceLanguagePreference): VoiceLanguageMode {
+  if (preference === 'hindi') return 'hindi';
+  if (preference === 'telugu_english') return 'mixed';
   return 'english';
 }
 
@@ -370,6 +435,8 @@ export function useVoice() {
   const [voiceLanguage, setVoiceLanguage] = useState<VoiceLanguagePreference>('telugu_english');
   const [backgroundListening, setBackgroundListening] = useState(false);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
+  const [voiceFrequencySignature, setVoiceFrequencySignature] =
+    useState<VoiceFrequencySignature | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const synthRef = useRef<SpeechSynthesis | null>(null);
@@ -383,17 +450,39 @@ export function useVoice() {
   const processingQueueRef = useRef(false);
   const stopRequestedRef = useRef(false);
   const isSpeakingRef = useRef(false);
+  const isListeningRef = useRef(false);
+  const backgroundListeningRef = useRef(false);
+  const recognitionStartingRef = useRef(false);
+  const microphoneBlockedRef = useRef(false);
+  const recognitionRestartTimerRef = useRef<number | null>(null);
+  const recognitionLanguageIndexRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const sourceElementRef = useRef<HTMLAudioElement | null>(null);
   const audioFrameRef = useRef<number | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const micAudioContextRef = useRef<AudioContext | null>(null);
+  const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micAnalyserRef = useRef<AnalyserNode | null>(null);
+  const micFrameRef = useRef<number | null>(null);
+  const micSignatureRef = useRef<VoiceFrequencySignature | null>(null);
   const visemeTimelineRef = useRef<VisemeFrame[]>([]);
   const visemeStartTimeRef = useRef(0);
+
+  const stopSpeechNowRef = useRef<(nextState?: Partial<VoiceState>) => void>(() => undefined);
 
   useEffect(() => {
     isSpeakingRef.current = state.isSpeaking;
   }, [state.isSpeaking]);
+
+  useEffect(() => {
+    isListeningRef.current = state.isListening;
+  }, [state.isListening]);
+
+  useEffect(() => {
+    backgroundListeningRef.current = backgroundListening;
+  }, [backgroundListening]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -429,7 +518,7 @@ export function useVoice() {
       setAvailableVoices(voices);
       if (!selectedVoiceId && voices.length) {
         const preferred = voices.find((voice) => voice.gender === voiceGender) ?? voices[0];
-        setSelectedVoiceId(preferred.id);
+        setSelectedVoiceId((current) => current || preferred.id);
       }
     };
 
@@ -443,19 +532,21 @@ export function useVoice() {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang =
-        voiceLanguage === 'english'
-          ? 'en-IN'
-          : voiceLanguage === 'hindi'
-            ? 'hi-IN'
-            : 'te-IN';
+      recognition.maxAlternatives = 3;
+      recognition.lang = preferredRecognitionLanguage(
+        voiceLanguage,
+        recognitionLanguageIndexRef.current
+      );
 
       recognition.onresult = (event: any) => {
         let interim = '';
         let finalResult = '';
 
         for (let i = event.resultIndex; i < event.results.length; i += 1) {
-          const value = event.results[i][0].transcript.trim();
+          const alternatives = Array.from(event.results[i] ?? []) as SpeechRecognitionAlternative[];
+          const strongestAlternative =
+            alternatives.find((alternative) => alternative.confidence >= 0.45) ?? alternatives[0] ?? event.results[i][0];
+          const value = strongestAlternative.transcript.trim();
           if (event.results[i].isFinal) {
             finalResult += `${value} `;
           } else {
@@ -464,76 +555,100 @@ export function useVoice() {
         }
 
         const heardText = `${finalResult} ${interim}`.trim();
+        const finalHeardText = finalResult.trim();
         if (isSpeakingRef.current && SPEECH_INTERRUPT_PATTERN.test(heardText)) {
-          stopRequestedRef.current = true;
-          speechQueueRef.current = [];
-          processingQueueRef.current = false;
-          synthRef.current?.cancel();
+          stopSpeechNowRef.current({ transcript: '', finalTranscript: '' });
+          return;
+        }
 
-          const sampleAudio = sampleAudioRef.current;
-          if (sampleAudio) {
-            sampleAudio.pause();
-            sampleAudio.currentTime = 0;
+        if (isSpeakingRef.current && heardText.split(/\s+/).filter(Boolean).length >= 2) {
+          stopSpeechNowRef.current();
+          if (!finalHeardText) {
+            setState((previous) => ({ ...previous, transcript: interim.trim() }));
+            return;
           }
+        }
 
-          const playbackAudio = playbackAudioRef.current;
-          if (playbackAudio) {
-            playbackAudio.pause();
-            playbackAudio.currentTime = 0;
-          }
-
-          if (playbackUrlRef.current) {
-            URL.revokeObjectURL(playbackUrlRef.current);
-            playbackUrlRef.current = null;
-          }
-
-          if (audioFrameRef.current) {
-            window.cancelAnimationFrame(audioFrameRef.current);
-            audioFrameRef.current = null;
-          }
-
-          if (visemeIntervalRef.current) {
-            window.clearInterval(visemeIntervalRef.current);
-            visemeIntervalRef.current = null;
-          }
-
+        if (isSpeakingRef.current && finalHeardText) {
+          stopSpeechNowRef.current();
           setState((previous) => ({
             ...previous,
-            isSpeaking: false,
-            speakingVolume: 0,
-            viseme: 0,
-            transcript: '',
-            finalTranscript: '',
+            transcript: interim.trim(),
+            finalTranscript: `${previous.finalTranscript} ${finalHeardText}`.trim(),
           }));
           return;
         }
 
-        setState((previous) => ({
-          ...previous,
-          transcript: interim.trim(),
-          finalTranscript: finalResult.trim() || previous.finalTranscript,
-        }));
+        setState((previous) => {
+          const nextFinal = finalResult.trim()
+            ? `${previous.finalTranscript} ${finalResult.trim()}`.trim()
+            : previous.finalTranscript;
+          return {
+            ...previous,
+            transcript: interim.trim(),
+            finalTranscript: nextFinal,
+          };
+        });
       };
 
       recognition.onstart = () => {
         manuallyStoppedRef.current = false;
+        recognitionStartingRef.current = false;
         setState((previous) => ({ ...previous, isListening: true }));
       };
 
-      recognition.onerror = () => {
+      recognition.onerror = (event: any) => {
+        recognitionStartingRef.current = false;
         setState((previous) => ({ ...previous, isListening: false }));
+        if (['not-allowed', 'service-not-allowed'].includes(event?.error)) {
+          microphoneBlockedRef.current = true;
+          manuallyStoppedRef.current = true;
+          setBackgroundListening(false);
+          return;
+        }
+        if (
+          backgroundListeningRef.current &&
+          !manuallyStoppedRef.current &&
+          ['no-speech', 'audio-capture', 'network', 'aborted'].includes(event?.error)
+        ) {
+          if (['no-speech', 'network'].includes(event?.error)) {
+            recognitionLanguageIndexRef.current += 1;
+            recognition.lang = preferredRecognitionLanguage(
+              voiceLanguage,
+              recognitionLanguageIndexRef.current
+            );
+          }
+          if (recognitionRestartTimerRef.current) {
+            window.clearTimeout(recognitionRestartTimerRef.current);
+          }
+          recognitionRestartTimerRef.current = window.setTimeout(() => {
+            try {
+              recognitionStartingRef.current = true;
+              recognition.start();
+            } catch {
+              recognitionStartingRef.current = false;
+              // Browser may reject overlapping starts.
+            }
+          }, 240);
+        }
       };
 
       recognition.onend = () => {
+        recognitionStartingRef.current = false;
         setState((previous) => ({ ...previous, isListening: false }));
-        if (backgroundListening && !manuallyStoppedRef.current) {
-          window.setTimeout(() => {
+        if (backgroundListeningRef.current && !manuallyStoppedRef.current) {
+          if (recognitionRestartTimerRef.current) {
+            window.clearTimeout(recognitionRestartTimerRef.current);
+          }
+          recognitionRestartTimerRef.current = window.setTimeout(() => {
             try {
+              recognitionStartingRef.current = true;
               recognition.start();
             } catch {
+              recognitionStartingRef.current = false;
               // no-op; browser may reject overlapping starts
             }
-          }, 250);
+          }, 220);
         }
       };
 
@@ -542,28 +657,32 @@ export function useVoice() {
 
     return () => {
       window.speechSynthesis.onvoiceschanged = null;
+      try {
+        recognitionRef.current?.abort?.();
+      } catch {
+        // Recognition can throw if the browser already stopped it.
+      }
+      recognitionRef.current = null;
+      if (recognitionRestartTimerRef.current) {
+        window.clearTimeout(recognitionRestartTimerRef.current);
+        recognitionRestartTimerRef.current = null;
+      }
     };
-  }, [backgroundListening, selectedVoiceId, voiceGender, voiceLanguage]);
+  }, [selectedVoiceId, voiceGender, voiceLanguage]);
 
   useEffect(() => {
     if (!availableVoices.length) return;
 
+    const mode = preferredLanguageMode(voiceLanguage);
     const current = availableVoices.find((voice) => voice.id === selectedVoiceId);
     const genderMatched = availableVoices.find((voice) => voice.gender === voiceGender);
     const languageMatched = availableVoices.find(
       (voice) =>
         voice.gender === voiceGender &&
-        languageMatches(
-          voice.lang,
-          voiceLanguage === 'english'
-            ? 'english'
-            : voiceLanguage === 'hindi'
-              ? 'hindi'
-              : 'mixed'
-        )
+        languageMatches(voice.lang, mode)
     );
     const selected =
-      current && current.gender === voiceGender
+      current && current.gender === voiceGender && languageMatches(current.lang, mode)
         ? current
         : (languageMatched ?? genderMatched ?? current ?? availableVoices[0]);
 
@@ -580,12 +699,13 @@ export function useVoice() {
   useEffect(() => {
     if (!recognitionRef.current) return;
 
-    recognitionRef.current.lang =
-      voiceLanguage === 'english'
-        ? 'en-IN'
-        : voiceLanguage === 'hindi'
-          ? 'hi-IN'
-          : 'te-IN';
+    recognitionLanguageIndexRef.current = 0;
+    recognitionRef.current.lang = preferredRecognitionLanguage(voiceLanguage);
+  }, [voiceLanguage]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('akansha_voice_language', voiceLanguage);
   }, [voiceLanguage]);
 
   const voiceChoices = useMemo(
@@ -593,14 +713,7 @@ export function useVoice() {
       const filteredVoices = availableVoices.filter(
         (voice) =>
           voice.gender === voiceGender &&
-          languageMatches(
-            voice.lang,
-            voiceLanguage === 'english'
-              ? 'english'
-              : voiceLanguage === 'hindi'
-                ? 'hindi'
-                : 'mixed'
-          )
+          languageMatches(voice.lang, preferredLanguageMode(voiceLanguage))
       );
 
       return filteredVoices.length
@@ -661,6 +774,111 @@ export function useVoice() {
     }
   }, []);
 
+  const stopMicFrequencyCapture = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (micFrameRef.current) {
+      window.cancelAnimationFrame(micFrameRef.current);
+      micFrameRef.current = null;
+    }
+    try {
+      micSourceNodeRef.current?.disconnect();
+    } catch {
+      // The browser may already have disconnected the node.
+    }
+    micSourceNodeRef.current = null;
+    micAnalyserRef.current = null;
+    micStreamRef.current?.getTracks().forEach((track) => track.stop());
+    micStreamRef.current = null;
+    void micAudioContextRef.current?.close().catch(() => undefined);
+    micAudioContextRef.current = null;
+  }, []);
+
+  const startMicFrequencyCapture = useCallback(
+    async (stream: MediaStream) => {
+      if (typeof window === 'undefined') return;
+      stopMicFrequencyCapture();
+
+      const context = new window.AudioContext();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.74;
+
+      const source = context.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      micStreamRef.current = stream;
+      micAudioContextRef.current = context;
+      micSourceNodeRef.current = source;
+      micAnalyserRef.current = analyser;
+
+      const frequencyData = new Uint8Array(analyser.frequencyBinCount);
+      const timeData = new Uint8Array(analyser.fftSize);
+      const sampleRate = context.sampleRate || 48000;
+      const binHz = sampleRate / analyser.fftSize;
+
+      const tick = () => {
+        analyser.getByteFrequencyData(frequencyData);
+        analyser.getByteTimeDomainData(timeData);
+
+        let weightedFrequency = 0;
+        let totalEnergy = 0;
+        let lowEnergy = 0;
+        let midEnergy = 0;
+        let highEnergy = 0;
+
+        frequencyData.forEach((value, index) => {
+          const energy = value / 255;
+          const frequency = index * binHz;
+          weightedFrequency += frequency * energy;
+          totalEnergy += energy;
+          if (frequency < 300) lowEnergy += energy;
+          else if (frequency < 1800) midEnergy += energy;
+          else highEnergy += energy;
+        });
+
+        const rms =
+          Math.sqrt(
+            timeData.reduce((sum, value) => {
+              const centered = (value - 128) / 128;
+              return sum + centered * centered;
+            }, 0) / Math.max(1, timeData.length)
+          ) || 0;
+
+        const previous = micSignatureRef.current;
+        const sampleCount = (previous?.sampleCount ?? 0) + 1;
+        const centroid = totalEnergy ? weightedFrequency / totalEnergy : previous?.spectralCentroidHz ?? 0;
+        const total = lowEnergy + midEnergy + highEnergy || 1;
+        const next: VoiceFrequencySignature = {
+          averageFrequencyHz: Math.round(centroid),
+          spectralCentroidHz: Math.round(
+            previous ? previous.spectralCentroidHz * 0.82 + centroid * 0.18 : centroid
+          ),
+          lowBandEnergy: Number(
+            (previous ? previous.lowBandEnergy * 0.82 + (lowEnergy / total) * 0.18 : lowEnergy / total).toFixed(3)
+          ),
+          midBandEnergy: Number(
+            (previous ? previous.midBandEnergy * 0.82 + (midEnergy / total) * 0.18 : midEnergy / total).toFixed(3)
+          ),
+          highBandEnergy: Number(
+            (previous ? previous.highBandEnergy * 0.82 + (highEnergy / total) * 0.18 : highEnergy / total).toFixed(3)
+          ),
+          rmsLevel: Number((previous ? previous.rmsLevel * 0.82 + rms * 0.18 : rms).toFixed(4)),
+          sampleCount,
+          capturedAt: new Date().toISOString(),
+        };
+
+        micSignatureRef.current = next;
+        if (sampleCount % 10 === 0) {
+          setVoiceFrequencySignature(next);
+        }
+        micFrameRef.current = window.requestAnimationFrame(tick);
+      };
+
+      tick();
+    },
+    [stopMicFrequencyCapture]
+  );
+
   const startSampleAudioAnalysis = useCallback(() => {
     if (typeof window === 'undefined' || !sampleAudioRef.current) return;
 
@@ -701,7 +919,7 @@ export function useVoice() {
         analyser.getByteFrequencyData(dataArray);
         const average =
           dataArray.reduce((sum, value) => sum + value, 0) / Math.max(1, dataArray.length);
-        const normalized = Math.min(1, average / 110);
+        const normalized = Math.min(1, Math.max(0.06, average / 72));
 
         setState((previous) => ({
           ...previous,
@@ -762,7 +980,7 @@ export function useVoice() {
         analyser.getByteFrequencyData(dataArray);
         const average =
           dataArray.reduce((sum, value) => sum + value, 0) / Math.max(1, dataArray.length);
-        const normalized = Math.min(1, average / 110);
+        const normalized = Math.min(1, Math.max(0.06, average / 72));
         let activeViseme = Math.max(0, Math.min(5, Math.round(normalized * 5)));
         let activeVolume = normalized;
 
@@ -774,7 +992,7 @@ export function useVoice() {
           );
 
           activeViseme = frame.viseme;
-          activeVolume = Math.max(normalized * 0.55, frame.intensity * 0.9);
+          activeVolume = Math.max(normalized * 0.7, frame.intensity * 0.95);
         }
 
         setState((previous) => ({
@@ -793,23 +1011,118 @@ export function useVoice() {
     }
   }, [startVisemeAnimation, stopAudioAnalysis]);
 
-  const startListening = useCallback(() => {
-    if (!recognitionRef.current || state.isListening) return;
-    if (state.isSpeaking) {
-      synthRef.current?.cancel();
+  const stopAllSpeechPlayback = useCallback((nextState?: Partial<VoiceState>) => {
+    stopRequestedRef.current = true;
+    speechQueueRef.current = [];
+    processingQueueRef.current = false;
+    synthRef.current?.cancel();
+
+    if (sampleAudioRef.current) {
+      sampleAudioRef.current.pause();
+      sampleAudioRef.current.currentTime = 0;
     }
 
-    try {
-      manuallyStoppedRef.current = false;
-      recognitionRef.current.start();
-    } catch {
-      // Browsers throw if start is called twice in a row.
+    if (playbackAudioRef.current) {
+      playbackAudioRef.current.pause();
+      playbackAudioRef.current.currentTime = 0;
     }
-  }, [state.isListening, state.isSpeaking]);
+
+    if (playbackUrlRef.current) {
+      URL.revokeObjectURL(playbackUrlRef.current);
+      playbackUrlRef.current = null;
+    }
+
+    stopAudioAnalysis();
+    stopVisemeAnimation();
+    setState((previous) => ({
+      ...previous,
+      isSpeaking: false,
+      speakingVolume: 0,
+      viseme: 0,
+      ...nextState,
+    }));
+  }, [stopAudioAnalysis, stopVisemeAnimation]);
+
+  const startListening = useCallback(() => {
+    if (
+      !recognitionRef.current ||
+      isListeningRef.current ||
+      recognitionStartingRef.current ||
+      microphoneBlockedRef.current
+    ) {
+      return;
+    }
+
+    const startRecognition = () => {
+      try {
+        manuallyStoppedRef.current = false;
+        recognitionStartingRef.current = true;
+        if (recognitionRef.current) {
+          recognitionRef.current.lang = preferredRecognitionLanguage(
+            voiceLanguage,
+            recognitionLanguageIndexRef.current
+          );
+        }
+        recognitionRef.current?.start();
+      } catch {
+        recognitionStartingRef.current = false;
+        // Browsers throw if start is called twice in a row.
+      }
+    };
+
+    if (navigator.mediaDevices?.getUserMedia) {
+      void navigator.mediaDevices
+        .getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        })
+        .then((stream) => {
+          void startMicFrequencyCapture(stream);
+          startRecognition();
+        })
+        .catch(() => {
+          microphoneBlockedRef.current = true;
+          manuallyStoppedRef.current = true;
+          setBackgroundListening(false);
+        });
+      return;
+    }
+
+    startRecognition();
+  }, [startMicFrequencyCapture, voiceLanguage]);
+
+  useEffect(() => {
+    stopSpeechNowRef.current = (nextState?: Partial<VoiceState>) => {
+      stopAllSpeechPlayback(nextState);
+      if (backgroundListeningRef.current && !manuallyStoppedRef.current) {
+        window.setTimeout(() => startListening(), INTERRUPTION_RESTART_DELAY_MS);
+      }
+    };
+  }, [startListening, stopAllSpeechPlayback]);
 
   const stopListening = useCallback(() => {
     manuallyStoppedRef.current = true;
+    recognitionStartingRef.current = false;
+    if (recognitionRestartTimerRef.current) {
+      window.clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
+    }
     recognitionRef.current?.stop();
+    stopMicFrequencyCapture();
+    if (micSignatureRef.current) {
+      setVoiceFrequencySignature(micSignatureRef.current);
+    }
+  }, [stopMicFrequencyCapture]);
+
+  const setContinuousListening = useCallback((enabled: boolean) => {
+    if (enabled) {
+      microphoneBlockedRef.current = false;
+      manuallyStoppedRef.current = false;
+    }
+    setBackgroundListening(enabled);
   }, []);
 
   const clearTranscript = useCallback(() => {
@@ -873,7 +1186,11 @@ export function useVoice() {
       const languageMode = detectVoiceLanguageMode(text, resolvedLanguagePreference);
 
       try {
-        const blob = item.preparedAudio ? await item.preparedAudio : await fetchSpeechBlob(text, options);
+        const blob = shouldUseFastBrowserSpeech(text, options)
+          ? null
+          : item.preparedAudio
+            ? await item.preparedAudio
+            : await fetchSpeechBlob(text, options);
         if (blob && playbackAudioRef.current) {
           const playbackUrl = URL.createObjectURL(blob);
           playbackUrlRef.current = playbackUrl;
@@ -885,6 +1202,9 @@ export function useVoice() {
           audio.onplay = () => {
             setState((previous) => ({ ...previous, isSpeaking: true }));
             startPlaybackAudioAnalysis(text, languageMode, resolvedTone);
+            if (backgroundListeningRef.current && !manuallyStoppedRef.current) {
+              window.setTimeout(() => startListening(), INTERRUPTION_RESTART_DELAY_MS);
+            }
           };
 
           await new Promise<void>((resolve, reject) => {
@@ -954,6 +1274,9 @@ export function useVoice() {
       utterance.onstart = () => {
         setState((previous) => ({ ...previous, isSpeaking: true }));
         startVisemeAnimation(text, languageMode, resolvedTone);
+        if (backgroundListeningRef.current && !manuallyStoppedRef.current) {
+          window.setTimeout(() => startListening(), INTERRUPTION_RESTART_DELAY_MS);
+        }
       };
 
       await new Promise<void>((resolve, reject) => {
@@ -976,6 +1299,7 @@ export function useVoice() {
       selectedVoiceId,
       fetchSpeechBlob,
       startPlaybackAudioAnalysis,
+      startListening,
       startVisemeAnimation,
       stopAudioAnalysis,
       stopVisemeAnimation,
@@ -1002,39 +1326,35 @@ export function useVoice() {
     }
 
     processingQueueRef.current = false;
-    if (!stopRequestedRef.current && backgroundListening) {
-      startListening();
+    if (!stopRequestedRef.current && backgroundListeningRef.current) {
+      window.setTimeout(() => startListening(), INTERRUPTION_RESTART_DELAY_MS);
     }
-  }, [backgroundListening, playSpeechChunk, startListening]);
+  }, [playSpeechChunk, startListening]);
 
   const speak = useCallback(
     async (text: string, options?: QueueSpeakOptions) => {
       if (!text.trim()) return;
 
       if (!options?.queue) {
-        stopRequestedRef.current = true;
-        speechQueueRef.current = [];
-        synthRef.current?.cancel();
-        if (sampleAudioRef.current) {
-          sampleAudioRef.current.pause();
-          sampleAudioRef.current.currentTime = 0;
-        }
-        if (playbackAudioRef.current) {
-          playbackAudioRef.current.pause();
-          playbackAudioRef.current.currentTime = 0;
-        }
-        if (playbackUrlRef.current) {
-          URL.revokeObjectURL(playbackUrlRef.current);
-          playbackUrlRef.current = null;
-        }
-        stopAudioAnalysis();
-        stopVisemeAnimation();
+        stopAllSpeechPlayback();
       }
 
       stopRequestedRef.current = false;
       if (options?.queue && speechQueueRef.current.length > 0) {
         const lastIndex = speechQueueRef.current.length - 1;
         const lastQueuedItem = speechQueueRef.current[lastIndex];
+        if ('preferBrowser' in (lastQueuedItem.options ?? {}) || options.preferBrowser) {
+          speechQueueRef.current.push({
+            text,
+            options,
+            preparedAudio:
+              options?.queue && !shouldUseFastBrowserSpeech(text, options)
+                ? fetchSpeechBlob(text, options)
+                : undefined,
+          });
+          void processSpeechQueue();
+          return;
+        }
         const currentGender = options.voiceGender ?? voiceGender;
         const currentTone = options.voiceTone ?? voiceTone;
         const currentLanguage = options.voiceLanguage ?? voiceLanguage;
@@ -1051,7 +1371,9 @@ export function useVoice() {
           speechQueueRef.current[lastIndex] = {
             ...lastQueuedItem,
             text: mergedText,
-            preparedAudio: fetchSpeechBlob(mergedText, lastQueuedItem.options),
+            preparedAudio: shouldUseFastBrowserSpeech(mergedText, lastQueuedItem.options)
+              ? undefined
+              : fetchSpeechBlob(mergedText, lastQueuedItem.options),
           };
           void processSpeechQueue();
           return;
@@ -1061,15 +1383,14 @@ export function useVoice() {
       speechQueueRef.current.push({
         text,
         options,
-        preparedAudio: options?.queue ? fetchSpeechBlob(text, options) : undefined,
+        preparedAudio: options?.queue && !shouldUseFastBrowserSpeech(text, options) ? fetchSpeechBlob(text, options) : undefined,
       });
       void processSpeechQueue();
     },
     [
       fetchSpeechBlob,
       processSpeechQueue,
-      stopAudioAnalysis,
-      stopVisemeAnimation,
+      stopAllSpeechPlayback,
       voiceGender,
       voiceLanguage,
       voiceTone,
@@ -1077,25 +1398,29 @@ export function useVoice() {
   );
 
   const stopSpeaking = useCallback(() => {
-    stopRequestedRef.current = true;
-    speechQueueRef.current = [];
-    synthRef.current?.cancel();
-    if (sampleAudioRef.current) {
-      sampleAudioRef.current.pause();
-      sampleAudioRef.current.currentTime = 0;
+    stopAllSpeechPlayback();
+    if (backgroundListeningRef.current && !manuallyStoppedRef.current) {
+      window.setTimeout(() => startListening(), INTERRUPTION_RESTART_DELAY_MS);
     }
-    if (playbackAudioRef.current) {
-      playbackAudioRef.current.pause();
-      playbackAudioRef.current.currentTime = 0;
-    }
-    if (playbackUrlRef.current) {
-      URL.revokeObjectURL(playbackUrlRef.current);
-      playbackUrlRef.current = null;
-    }
-    setState((previous) => ({ ...previous, isSpeaking: false }));
-    stopVisemeAnimation();
-    stopAudioAnalysis();
-  }, [stopAudioAnalysis, stopVisemeAnimation]);
+  }, [startListening, stopAllSpeechPlayback]);
+
+  useEffect(() => {
+    if (!backgroundListening) return;
+
+    manuallyStoppedRef.current = false;
+    const keepAlive = window.setInterval(() => {
+      if (
+        backgroundListeningRef.current &&
+        !manuallyStoppedRef.current &&
+        !isListeningRef.current &&
+        !recognitionStartingRef.current
+      ) {
+        startListening();
+      }
+    }, LISTENING_KEEPALIVE_MS);
+
+    return () => window.clearInterval(keepAlive);
+  }, [backgroundListening, startListening]);
 
   const previewSelectedVoice = useCallback(() => {
     if (selectedVoiceId === FEMALE_SAMPLE_VOICE_ID && sampleAudioRef.current) {
@@ -1137,8 +1462,12 @@ export function useVoice() {
       if (playbackUrlRef.current) {
         URL.revokeObjectURL(playbackUrlRef.current);
       }
+      stopMicFrequencyCapture();
+      if (recognitionRestartTimerRef.current) {
+        window.clearTimeout(recognitionRestartTimerRef.current);
+      }
     };
-  }, [stopAudioAnalysis]);
+  }, [stopAudioAnalysis, stopMicFrequencyCapture]);
 
   return {
     ...state,
@@ -1149,10 +1478,11 @@ export function useVoice() {
     voiceLanguage,
     backgroundListening,
     selectedVoiceId,
+    voiceFrequencySignature,
     setVoiceGender,
     setVoiceTone,
     setVoiceLanguage,
-    setBackgroundListening,
+    setBackgroundListening: setContinuousListening,
     setSelectedVoiceId,
     startListening,
     stopListening,

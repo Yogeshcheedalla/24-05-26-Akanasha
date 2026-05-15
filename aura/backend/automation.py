@@ -22,6 +22,8 @@ from pptx.util import Inches
 
 pyautogui.FAILSAFE = False
 
+BROWSER_TITLE_TOKENS = ("youtube", "google", "chrome", "brave", "edge", "firefox", "browser")
+
 
 APP_LAUNCH_COMMANDS: dict[str, list[str]] = {
     "notepad": ["notepad.exe"],
@@ -191,7 +193,7 @@ AMMA_ONLY_CONTACT_ALIASES: dict[str, str] = {
 }
 
 WHATSAPP_CONTACT_DISPLAY_NAMES: dict[str, list[str]] = {
-    "Amma": ["Amma💗", "Amma"],
+    "Amma": ["Amma", "Amma💗"],
 }
 
 SPECIAL_FOLDERS: dict[str, Path] = {
@@ -414,13 +416,10 @@ def _find_whatsapp_contact_element(window, display_options: list[str]):
         for target in normalized_targets:
             if not target:
                 continue
-            if normalized_text == target:
-                score = 140
-            elif target in normalized_text or normalized_text in target:
-                score = 80
-            else:
+            if normalized_text != target:
                 continue
 
+            score = 140
             if control_type in {"listitem", "dataitem"}:
                 score += 35
             elif control_type == "text":
@@ -509,9 +508,71 @@ def _is_whatsapp_chat_open(window, display_options: list[str]) -> bool:
             continue
 
         for target in normalized_targets:
-            if normalized_text == target or target in normalized_text:
+            if normalized_text == target:
                 return True
     return False
+
+
+def _is_bottom_right_pane(window, rect) -> bool:
+    if rect is None:
+        return False
+    left, top, width, height = _get_window_bounds(window)
+    if width <= 0 or height <= 0:
+        return False
+    x_center = (rect.left + rect.right) / 2
+    y_center = (rect.top + rect.bottom) / 2
+    return (
+        left + (width * 0.34) <= x_center <= left + (width * 0.96)
+        and top + (height * 0.84) <= y_center <= top + (height * 0.99)
+    )
+
+
+def _find_whatsapp_composer_element(window):
+    best_match = None
+    best_score = -1
+    for element in _iter_descendants(window):
+        rect = _get_element_rectangle(element)
+        if not _is_bottom_right_pane(window, rect):
+            continue
+        try:
+            control_type = (element.element_info.control_type or "").lower()
+            name = (element.window_text() or element.element_info.name or "").strip().lower()
+        except Exception:
+            continue
+
+        score = 0
+        if control_type in {"edit", "document"}:
+            score += 80
+        if "message" in name or "type" in name:
+            score += 35
+        if rect is not None:
+            score += min(int((rect.right - rect.left) / 20), 30)
+        if score > best_score:
+            best_match = element
+            best_score = score
+    return best_match
+
+
+def _focus_whatsapp_composer(window) -> bool:
+    composer = _find_whatsapp_composer_element(window)
+    if composer is not None:
+        try:
+            composer.click_input()
+            return True
+        except Exception:
+            if _click_element_center(composer):
+                return True
+
+    _click_window_ratio(window, 0.57, 0.955)
+    return _is_focus_near_whatsapp_composer(window)
+
+
+def _is_focus_near_whatsapp_composer(window) -> bool:
+    try:
+        focused = Desktop(backend="uia").get_focus()
+    except Exception:
+        return True
+    return _is_bottom_right_pane(window, _get_element_rectangle(focused))
 
 
 async def _open_whatsapp_contact_guarded(contact: str) -> dict[str, str]:
@@ -668,7 +729,8 @@ async def _whatsapp_open_contact_and_send(contact: str, message: str) -> dict[st
     window = _wait_for_whatsapp_window()
 
     # Click the composer separately so the message never bleeds into the search field.
-    _click_window_ratio(window, 0.57, 0.955)
+    if not _focus_whatsapp_composer(window):
+        raise RuntimeError("WhatsApp chat opened, but the message composer could not be safely focused.")
     await asyncio.sleep(0.28)
     pyautogui.write(cleaned_message, interval=0.025)
     await asyncio.sleep(0.12)
@@ -839,7 +901,7 @@ def _extract_amount(payload: dict, default: int = 5) -> int:
         parsed = int(float(str(raw_value)))
     except (TypeError, ValueError):
         parsed = default
-    return max(1, min(parsed, 100))
+    return max(0, min(parsed, 100))
 
 
 def _set_windows_brightness(value: int) -> int:
@@ -878,6 +940,128 @@ def _get_windows_brightness() -> int:
     if not match:
         raise RuntimeError("Windows did not return a current brightness value.")
     return max(0, min(int(match.group(0)), 100))
+
+
+def _set_windows_volume_percent(value: int) -> int:
+    """Best-effort exact volume using Windows media keys.
+
+    Windows exposes volume keys in roughly 2% increments on most machines. We
+    first walk to zero, then raise to the closest requested step.
+    """
+    safe_value = max(0, min(int(value), 100))
+    pyautogui.press("volumedown", presses=55, interval=0.01)
+    if safe_value:
+        pyautogui.press("volumeup", presses=round(safe_value / 2), interval=0.01)
+    return safe_value
+
+
+def _activate_window(window) -> bool:
+    try:
+        if getattr(window, "isMinimized", False):
+            window.restore()
+        window.activate()
+        time.sleep(0.25)
+        return True
+    except Exception:
+        return False
+
+
+def _activate_browser_window(title_tokens: tuple[str, ...] = BROWSER_TITLE_TOKENS, timeout_seconds: float = 5.0):
+    deadline = time.time() + timeout_seconds
+    normalized_tokens = tuple(token.lower() for token in title_tokens if token)
+    fallback = None
+
+    while time.time() < deadline:
+        windows = [window for window in gw.getAllWindows() if getattr(window, "title", "").strip()]
+        for window in windows:
+            title = window.title.lower()
+            if any(token in title for token in normalized_tokens):
+                if _activate_window(window):
+                    return window
+                fallback = fallback or window
+
+        if fallback and _activate_window(fallback):
+            return fallback
+
+        time.sleep(0.15)
+
+    return pyautogui.getActiveWindow()
+
+
+def _click_youtube_result(index: int) -> dict[str, int]:
+    safe_index = max(1, min(int(index), 10))
+    window = _activate_browser_window(("youtube", "chrome", "brave", "edge", "firefox"), timeout_seconds=3.0)
+    if window:
+        left, top, width, height = window.left, window.top, window.width, window.height
+    else:
+        width, height = pyautogui.size()
+        left, top = 0, 0
+
+    pyautogui.press("home")
+    time.sleep(0.25)
+
+    row_gap = max(100, min(136, int(height * 0.13)))
+    first_result_y = top + max(170, min(230, int(height * 0.23)))
+    x = left + int(width * 0.56)
+    y = min(top + height - 90, first_result_y + ((safe_index - 1) * row_gap))
+
+    pyautogui.moveTo(x, y, duration=0.08)
+    pyautogui.click(x, y)
+    time.sleep(0.45)
+    pyautogui.press("enter")
+    return {"index": safe_index, "x": x, "y": y}
+
+
+def _safe_key_name(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9_+-]", "", value.strip().lower().replace(" ", ""))
+    aliases = {
+        "esc": "escape",
+        "del": "delete",
+        "pgup": "pageup",
+        "pgdn": "pagedown",
+        "spacebar": "space",
+        "return": "enter",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _safe_hotkey_keys(values: list[str]) -> list[str]:
+    allowed = {
+        "ctrl",
+        "shift",
+        "alt",
+        "win",
+        "command",
+        "enter",
+        "escape",
+        "tab",
+        "space",
+        "backspace",
+        "delete",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "left",
+        "right",
+        "up",
+        "down",
+        "a",
+        "c",
+        "s",
+        "v",
+        "x",
+        "z",
+        "y",
+        "f",
+        "n",
+        "o",
+        "p",
+        "w",
+        "t",
+    }
+    keys = [_safe_key_name(value) for value in values if value]
+    return [key for key in keys if key in allowed]
 
 
 async def execute_desktop_command(action: str, target: str = None, payload: dict | None = None):
@@ -996,6 +1180,43 @@ async def execute_desktop_command(action: str, target: str = None, payload: dict
             pyautogui.write(text, interval=0.03)
             return {"success": True, "message": f"Typed text into the active window."}
 
+        if action == "press_key":
+            key = _safe_key_name(str(target or payload.get("key", "")))
+            if not key:
+                return {"success": False, "message": "No key was provided."}
+            pyautogui.press(key)
+            return {"success": True, "message": f"Pressed {key} in the active window."}
+
+        if action == "hotkey":
+            keys = _safe_hotkey_keys([str(value) for value in payload.get("keys", [])])
+            if len(keys) < 2:
+                return {"success": False, "message": "That keyboard shortcut is not allowed."}
+            pyautogui.hotkey(*keys)
+            return {"success": True, "message": f"Pressed {' + '.join(keys)} in the active window."}
+
+        if action == "scroll":
+            direction = str(payload.get("direction", target or "down")).lower()
+            amount = _extract_amount(payload, 5) or 5
+            clicks = amount * (1 if direction == "up" else -1)
+            pyautogui.scroll(clicks)
+            return {"success": True, "message": f"Scrolled {direction} in the active window."}
+
+        if action == "notify_user":
+            title = str(payload.get("title", "Akansha notification")).strip() or "Akansha notification"
+            body = str(payload.get("body", "Akansha needs your confirmation.")).strip()
+            safe_title = title.replace("'", "''")
+            safe_body = body.replace("'", "''")
+            popup_script = f"""
+Add-Type -AssemblyName PresentationFramework
+[System.Windows.MessageBox]::Show('{safe_body}', '{safe_title}') | Out-Null
+"""
+            subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-Sta", "-Command", popup_script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return {"success": True, "message": title}
+
         if action == "type_sequence":
             values = payload.get("values", [])
             if not values:
@@ -1046,12 +1267,51 @@ async def execute_desktop_command(action: str, target: str = None, payload: dict
             opened_url = _open_external_url(
                 f"https://www.youtube.com/results?search_query={quote_plus(query)}"
             )
+            click_payload = None
+            if payload.get("play"):
+                await asyncio.sleep(float(payload.get("wait_seconds", 4.2)))
+                _activate_browser_window(("youtube", "chrome", "brave", "edge", "firefox"), timeout_seconds=5.0)
+                click_payload = _click_youtube_result(int(payload.get("index", 1)))
             return {
                 "success": True,
-                "message": "Opened the YouTube search in the default browser.",
+                "message": (
+                    f"Opened YouTube and selected result {payload.get('index', 1)}."
+                    if payload.get("play")
+                    else "Opened the YouTube search in the default browser."
+                ),
                 "url": opened_url,
-                "note": "Playing media in the background still depends on the browser and site autoplay rules.",
+                "click": click_payload,
+                "note": (
+                    "I focused the browser before selecting the result. If YouTube changes the visible layout "
+                    "or inserts Shorts/promoted rows, result selection may still need one correction."
+                ),
             }
+
+        if action == "click_youtube_result":
+            index = _extract_amount(payload, int(target or 1) if str(target or "").isdigit() else 1)
+            click_payload = _click_youtube_result(index)
+            return {
+                "success": True,
+                "message": f"Selected YouTube result {index} in the active browser window.",
+                "click": click_payload,
+            }
+
+        if action == "media_play_pause":
+            pyautogui.press("playpause")
+            return {"success": True, "message": "Toggled media playback."}
+
+        if action == "media_next":
+            pyautogui.press("nexttrack")
+            return {"success": True, "message": "Skipped to the next media item."}
+
+        if action == "media_previous":
+            pyautogui.press("prevtrack")
+            return {"success": True, "message": "Returned to the previous media item."}
+
+        if action == "set_volume":
+            value = _extract_amount(payload, 60)
+            applied = _set_windows_volume_percent(value)
+            return {"success": True, "message": f"Set system volume to about {applied}%."}
 
         if action == "volume_up":
             presses = _extract_amount(payload, 5)

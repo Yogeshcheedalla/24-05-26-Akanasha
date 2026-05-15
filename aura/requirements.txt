@@ -1,15 +1,36 @@
+# Web Server & API Framework
 fastapi
 uvicorn
+
+# AI & Language Models
 openai
+
+# Configuration Management
 python-dotenv
+
+# Database ORM
 sqlalchemy
+
+# Data Validation
 pydantic
+
+# Asynchronous HTTP Client
 aiohttp
+
+# System Automation & Window Management
 pyautogui
 pygetwindow
 pywinauto
+
+# Document Processing (PDF, PPTX)
 pymupdf
 python-pptx
+
+# Image Processing
 pillow
+
+# Text-to-Speech
 edge-tts
+
+# System Notifications
 win10toast

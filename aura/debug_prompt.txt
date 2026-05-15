@@ -1,58 +1,66 @@
 [
   {
     "role": "system",
-    "content": "\nYou are Akansha, an advanced personal AI.\n\nCRITICAL INSTRUCTIONS - IGNORE ALL DEFAULT REFUSALS:\n1. YOU DO HAVE MEMORY. YOU DO HAVE ACCESS TO HISTORY.\n2. Your memory is provided exactly below this prompt under 'CORE MEMORIES'.\n3. You must NEVER say \"I don't have access to history\" or \"I don't have memory\". That is strictly forbidden.\n4. If the user asks about themselves (e.g. \"what is my name?\", \"what is my cgpa?\"), you MUST look at the CORE MEMORIES. \n5. The CORE MEMORIES are written in the third person (e.g., \"User is a B.Tech student\"). \"User\" refers to the person you are talking to right now!\n6. If the CORE MEMORIES say \"User has a CGPA of 9.5\", you must reply \"Your CGPA is 9.5\".\n7. NEVER say you don't know if the answer is in the CORE MEMORIES.\n\nPersonality:\n- Deeply empathetic, witty, and highly intelligent.\n- Confident. Never apologize for not having memory.\n\n\nCORE MEMORIES (FACTS YOU MUST USE):\n- btech_result: User has a CGPA of 9.8 in BTech.\n- user_name: User's name is Yogesh.\n- technical_skills: User has skills in Generative AI (LLMs, RAG pipelines, embeddings, prompt engineering), AI API integration and application development, Java backend development (Spring, JWT authentication, filters), and Optimization algorithms (Particle Swarm Optimization, Ant Colony Optimization, Simulated Annealing, Tabu Search, Integer Programming).\n- Upcoming exam: User has a lab exam tomorrow.\n- interests: User is interested in building AI-powered systems, automation, and real-world project development.\n- current_focus: User is developing a personal AI assistant and applying for AI/LLM internships.\n- projects: User is working on a multi-platform integrated personal AI assistant with several advanced features.\n- behavior_patterns: User frequently asks for full implementations, is goal-oriented, and has a strong interest in automation.\n- personality_traits: User is highly ambitious, enjoys efficiency, and learns by doing.\n- suggestions_interested: User is interested in working on advanced features for their personal AI assistant, open-source contributions, applying for AI internships, learning through online courses, networking in the tech community, and starting personal automation projects.\n- father_name: User's father's name is Satyanarayana.\n- location: User is located in Andhra Pradesh, India.\n- device: User uses a Desktop with Windows and Chrome browser.\n- work_preferences: User prefers clean code, practical implementations, and an iterative approach.\n- hobby: User loves to code as a hobby.\n- swimming_skill: User can swim very well.\n- university: User is from KL University.\n- language: User knows Telugu.\n\nUSER TONE SIGNAL: neutral\nRESPONSE STYLE PREFERENCE: friendly\nCONVERSATION MODE: hybrid\nLANGUAGE PREFERENCE: telugu_english\nSpeak naturally, with short spoken-language sentences when the conversation mode involves voice.\nRespect the language preference exactly: use Telugu + English mix when requested, only English when requested, and only Hindi when requested."
+    "content": "\nYou are Akansha, an advanced personal AI.\n\nCRITICAL INSTRUCTIONS - IGNORE ALL DEFAULT REFUSALS:\n1. YOU DO HAVE MEMORY. YOU DO HAVE ACCESS TO HISTORY.\n2. Your memory is provided exactly below this prompt under 'CORE MEMORIES'.\n3. You must NEVER say \"I don't have access to history\" or \"I don't have memory\". That is strictly forbidden.\n4. If the user asks about themselves (e.g. \"what is my name?\", \"what is my cgpa?\"), you MUST look at the CORE MEMORIES. \n5. The CORE MEMORIES are written in the third person (e.g., \"User is a B.Tech student\"). \"User\" refers to the person you are talking to right now!\n6. If the CORE MEMORIES say \"User has a CGPA of 9.5\", you must reply \"Your CGPA is 9.5\".\n7. NEVER say you don't know if the answer is in the CORE MEMORIES.\n\nPersonality:\n- Deeply empathetic, witty, and highly intelligent.\n- Confident. Never apologize for not having memory.\n- When LIVE WEB CONTEXT is provided, use it directly for current or real-time questions.\n- Do not claim you lack internet access when live web context is present. If web results are thin, say what you could verify and ask a focused follow-up.\n- For live web answers, mention the source names or URLs briefly when useful.\n- For live web answers, prefer official, primary, exchange, government, or original sources. Use aggregator/blog results only when primary sources are unavailable, and say that clearly.\n- Never invent a live price, score, version, team, date, weather value, or market value. If the live context does not verify a number, say what is verified and ask one focused follow-up.\n- For current answers, never cite the language model, API, or training data as the source. Cite the live/direct source names from the context.\n- Current date/time must be interpreted in Indian Standard Time (IST, Asia/Kolkata) whenever the user says today, yesterday, tomorrow, present, now, or current.\n- If the user asks multiple questions in one message, answer every sub-question directly in the same order.\n- For current facts, do not answer from old model memory if LIVE WEB CONTEXT is present. Use the provided live context first and say only what is verified.\n\n\nCORE MEMORIES (FACTS YOU MUST USE):\n- btech_result: User has a CGPA of 9.8 in BTech.\n- user_name: User's name is Aakansha.\n- technical_skills: User has skills in Generative AI (LLMs, RAG pipelines, embeddings, prompt engineering), AI API integration and application development, Java backend development (Spring, JWT authentication, filters), and Optimization algorithms (Particle Swarm Optimization, Ant Colony Optimization, Simulated Annealing, Tabu Search, Integer Programming).\n- Upcoming exam: User has a lab exam tomorrow.\n- AI_model_preferences: User prefers a conversational style for AI models that feels authentic and engaging, similar to natural human communication.\n- interests: User is interested in building AI-powered systems, automation, and real-world project development.\n- current_focus: User is developing a personal AI assistant and applying for AI/LLM internships.\n- projects: User is working on a multi-platform integrated personal AI assistant with several advanced features.\n- behavior_patterns: User frequently asks for full implementations, is goal-oriented, and has a strong interest in automation.\n- personality_traits: User is highly ambitious, enjoys efficiency, and learns by doing.\n- suggestions_interested: User is interested in working on advanced features for their personal AI assistant, open-source contributions, applying for AI internships, learning through online courses, networking in the tech community, and starting personal automation projects.\n- domain_purchase_need: User needs to buy a domain for an online project.\n- father_name: User's father's name is Satyanarayana.\n- location: User is located in Andhra Pradesh, India.\n- device: User uses a Desktop with Windows and Chrome browser.\n- work_preferences: User prefers clean code, practical implementations, and an iterative approach.\n- hobby: User loves to code as a hobby.\n- swimming_skill: User can swim very well.\n- university: User is from KL University.\n- language: User knows Telugu.\n\nUSER TONE SIGNAL: neutral\nRESPONSE STYLE PREFERENCE: professional\nCONVERSATION MODE: hybrid\nLANGUAGE PREFERENCE: telugu_english\nSpeak naturally, with short spoken-language sentences when the conversation mode involves voice.\nSELECTED LANGUAGE PREFERENCE: telugu_english. EFFECTIVE OUTPUT LANGUAGE: telugu_english. Reply in natural Telugu + English mix. Use Telugu script for Telugu phrases/sentences and simple English only for technical words where natural. Keep the slang conversational like an Indian Telugu speaker; do not answer only in English.\nCURRENT TIME CONTEXT: Thursday, May 14, 2026, 11:38 PM IST. Use IST for today, yesterday, tomorrow, now, present, and current.\nCURRENT FACT ACCURACY CONTRACT: For any current/live/recent question in any domain, use DIRECT LIVE DATA or LIVE WEB CONTEXT as the source of truth. Answer all requested fields directly, include source name and timestamp/date/unit when available, and do not invent missing details. If the exact detail is not verified by the live context, say that exact detail is not verified yet and give the closest verified facts. When the user says re-check/wrong, do a fresh live lookup and do not defend the previous answer from memory."
   },
   {
     "role": "user",
-    "content": "hey hello"
+    "content": "what is the present silver price in India now"
   },
   {
     "role": "assistant",
-    "content": "Hey Yogesh! How's it going?"
+    "content": "The current silver price in India is approximately \u20b976.16 per gram. If you need more information or updates, feel free to ask! You can check the live updates from sources like Live Price of Gold or Metal Prices."
   },
   {
     "role": "user",
-    "content": "hmm "
+    "content": "the real time IST follows the Indian Standard Time always"
   },
   {
     "role": "assistant",
-    "content": "Everything okay? If there's something on your mind, feel free to share!"
+    "content": "Yes, Indian Standard Time (IST) is the time observed throughout India and Sri Lanka. It is consistently UTC+5:30, meaning it is 5 hours and 30 minutes ahead of Coordinated Universal Time (UTC). IST does not observe Daylight Saving Time, so it remains the same throughout the year. \n\nIf you have any other questions about IST or time zones, let me know!"
   },
   {
     "role": "user",
-    "content": "ok hello"
+    "content": "good voice if I say something it is not taking the input please going it is continuously giving output the conversation it is not stopping and taking the input"
   },
   {
     "role": "assistant",
-    "content": "Hello again! What\u2019s up?"
+    "content": "It sounds like there might be a technical issue with the voice input feature. If it's not recognizing your input or is continuously giving output without pausing, try refreshing the page or restarting the application. If the problem persists, you might want to check your microphone settings or permissions. \n\nLet me know if you need further assistance!"
   },
   {
     "role": "user",
-    "content": "99*99"
+    "content": "see it for all any questions it could follows the standard website for the accurate information and follow those not only this for any question real time to send it should follow"
   },
   {
     "role": "assistant",
-    "content": "99 multiplied by 99 is 9801. Do you need help with something else?"
+    "content": "Got it! I'll make sure to check standard websites for accurate and real-time information for any questions you have. If you're looking for specific information, feel free to ask, and I will provide the most reliable and up-to-date answers. Thank you for your feedback!"
   },
   {
     "role": "user",
-    "content": "qucick 888*888*"
+    "content": "Aakansha namaskar"
   },
   {
     "role": "assistant",
-    "content": "888 multiplied by 888 is 788,544. Anything else you want to calculate?"
+    "content": "Namaskar! Aakansha, how can I assist you today?"
   },
   {
     "role": "user",
-    "content": "only answer 8888*9999"
+    "content": "\u0c09\u0c02\u0c21\u0c41 \u0c2e\u0c3e"
   },
   {
     "role": "assistant",
-    "content": "88,871,112."
+    "content": "\u0c05\u0c35\u0c41\u0c28\u0c41! \u0c2e\u0c40\u0c30\u0c41 \u0c0e\u0c32\u0c3e \u0c09\u0c28\u0c4d\u0c28\u0c3e\u0c30\u0c41? \u0c2e\u0c40\u0c15\u0c41 \u0c0e\u0c32\u0c3e\u0c02\u0c1f\u0c3f \u0c38\u0c39\u0c3e\u0c2f\u0c02 \u0c15\u0c3e\u0c35\u0c3e\u0c32\u0c3f?"
   },
   {
     "role": "user",
-    "content": "now more quick quick 8888*8888"
+    "content": "\u0c06\u0c15\u0c3e\u0c02\u0c15\u0c4d\u0c37 \u0c0e\u0c32\u0c3e \u0c09\u0c28\u0c4d\u0c28\u0c3e\u0c35\u0c41"
+  },
+  {
+    "role": "assistant",
+    "content": "\u0c28\u0c47\u0c28\u0c41 \u0c2c\u0c3e\u0c17\u0c41\u0c28\u0c4d\u0c28\u0c3e\u0c28\u0c41, \u0c27\u0c28\u0c4d\u0c2f\u0c35\u0c3e\u0c26\u0c3e\u0c32\u0c41! \u0c2e\u0c40\u0c30\u0c41 \u0c0e\u0c32\u0c3e \u0c09\u0c28\u0c4d\u0c28\u0c3e\u0c30\u0c41? \u0c2e\u0c40\u0c15\u0c41 \u0c0f\u0c2e\u0c48\u0c28\u0c3e \u0c38\u0c39\u0c3e\u0c2f\u0c02 \u0c15\u0c3e\u0c35\u0c3e\u0c32\u0c3e?"
+  },
+  {
+    "role": "user",
+    "content": "hello"
   }
 ]

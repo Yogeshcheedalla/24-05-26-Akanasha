@@ -2,8 +2,9 @@
 
 import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
-import { Search, Star, Share2, Brain, Paperclip, MessageSquare, Check, X, Trash2, FolderInput, Download, ArrowUpDown, Filter,  } from 'lucide-react';
+import { Search, Star, Share2, Brain, Paperclip, MessageSquare, Check, X, Trash2, FolderInput, Download, ArrowUpDown, Filter, Archive } from 'lucide-react';
 import type { Conversation } from './ConversationHistoryScreen';
+import type { ConversationFolder } from '@/lib/chatHistoryMetadata';
 import { toast } from 'sonner';
 
 interface ConversationListProps {
@@ -16,9 +17,12 @@ interface ConversationListProps {
   loading?: boolean;
   onDeleteConversations?: (ids: string[]) => Promise<void> | void;
   onClearHistory?: () => Promise<void> | void;
+  folders: ConversationFolder[];
+  onMoveConversations?: (ids: string[], folderId: string) => void;
+  onArchiveConversations?: (ids: string[]) => void;
+  onExportConversations?: (ids: string[]) => void;
 }
 
-const MODEL_OPTIONS = ['All models', 'Akansha', 'Claude 3.5 Sonnet', 'Gemini 1.5 Pro'];
 const SORT_OPTIONS = [
   { key: 'sort-updated', label: 'Last updated', value: 'updated' },
   { key: 'sort-created', label: 'Date created', value: 'created' },
@@ -28,8 +32,8 @@ const SORT_OPTIONS = [
 
 function formatRelativeTime(dateStr: string): string {
   const date = new Date(dateStr);
-  const now = new Date('2026-04-24T12:46:44Z');
-  const diffMs = now.getTime() - date.getTime();
+  const now = new Date();
+  const diffMs = Math.max(0, now.getTime() - date.getTime());
   const diffMins = Math.floor(diffMs / 60000);
   const diffHours = Math.floor(diffMins / 60);
   const diffDays = Math.floor(diffHours / 24);
@@ -57,6 +61,10 @@ export default function ConversationList({
   loading = false,
   onDeleteConversations,
   onClearHistory,
+  folders,
+  onMoveConversations,
+  onArchiveConversations,
+  onExportConversations,
 }: ConversationListProps) {
   const [search, setSearch] = useState('');
   const [selectedModel, setSelectedModel] = useState('All models');
@@ -65,6 +73,10 @@ export default function ConversationList({
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [showSharedOnly, setShowSharedOnly] = useState(false);
+  const modelOptions = useMemo(
+    () => ['All models', ...Array.from(new Set(conversations.map((conversation) => conversation.model))).sort()],
+    [conversations]
+  );
 
   const filtered = useMemo(() => {
     let result = [...conversations];
@@ -133,8 +145,31 @@ export default function ConversationList({
   };
 
   const handleBulkMove = () => {
-    toast.success(`${selectedIds.size} conversation${selectedIds.size > 1 ? 's' : ''} moved`);
+    if (!selectedIds.size) return;
+
+    const folderNames = folders.map((folder) => folder.name).join(', ');
+    const folderName = window.prompt(`Move to folder: ${folderNames}`, folders[0]?.name || '');
+    if (!folderName) return;
+
+    const folder = folders.find((item) => item.name.toLowerCase() === folderName.trim().toLowerCase());
+    if (!folder) {
+      toast.error('Folder not found');
+      return;
+    }
+
+    onMoveConversations?.(Array.from(selectedIds), folder.id);
     onSelectionChange(new Set());
+  };
+
+  const handleBulkArchive = () => {
+    if (!selectedIds.size) return;
+    onArchiveConversations?.(Array.from(selectedIds));
+    onSelectionChange(new Set());
+  };
+
+  const handleBulkExport = () => {
+    if (!selectedIds.size) return;
+    onExportConversations?.(Array.from(selectedIds));
   };
 
   const activeFilterCount = [
@@ -195,7 +230,7 @@ export default function ConversationList({
                 <div className="fixed inset-0 z-40" onClick={() => setFilterMenuOpen(false)} />
                 <div className="absolute left-0 top-full mt-1 z-50 bg-card border border-border rounded-xl shadow-lg py-3 w-56 animate-fade-in">
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 mb-2">Model</p>
-                  {MODEL_OPTIONS.map(model => (
+                  {modelOptions.map(model => (
                     <button
                       key={`model-filter-${model}`}
                       onClick={() => setSelectedModel(model)}
@@ -348,7 +383,7 @@ export default function ConversationList({
                       <span className="text-xs text-muted-foreground">{conv.model}</span>
                     </div>
 
-                    <span className="text-muted-foreground/30">·</span>
+                    <span className="text-muted-foreground/30">-</span>
 
                     {/* Message count */}
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -356,7 +391,7 @@ export default function ConversationList({
                       <span className="font-mono tabular-nums">{conv.messageCount}</span>
                     </span>
 
-                    <span className="text-muted-foreground/30">·</span>
+                    <span className="text-muted-foreground/30">-</span>
 
                     {/* Token count */}
                     <span className="text-xs text-muted-foreground font-mono tabular-nums">
@@ -430,7 +465,17 @@ export default function ConversationList({
             <FolderInput size={13} />
             Move to folder
           </button>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
+          <button
+            onClick={handleBulkArchive}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <Archive size={13} />
+            Archive
+          </button>
+          <button
+            onClick={handleBulkExport}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
             <Download size={13} />
             Export
           </button>

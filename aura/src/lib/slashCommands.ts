@@ -198,7 +198,6 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     category: 'Automation',
     description: 'Force Akansha to open something in the browser.',
     template: 'Open {input} in the web browser.',
-    aliases: ['website'],
   },
   {
     name: 'website',

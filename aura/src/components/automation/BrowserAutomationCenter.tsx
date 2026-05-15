@@ -171,11 +171,11 @@ export function BrowserAutomationCenter() {
           <Sparkles size={16} className="text-[#a88dff]" />
           <p className="text-sm font-medium">Describe the task once</p>
         </div>
-          <p className="mt-2 text-sm leading-6 text-slate-300">
-            Example: open a site, search for something, type a message, fill credentials, clear a draft,
-            close a tab, or open a desktop app like Notepad, Calculator, Explorer, or VS Code. Akansha
-            will try to open the right place and use the most important text from your prompt.
-          </p>
+        <p className="mt-2 text-sm leading-6 text-slate-300">
+          Example: open a site, search for something, type a message, fill credentials, clear a draft,
+          close a tab, or open a desktop app like Notepad, Calculator, Explorer, or VS Code. Akansha
+          will try to open the right place and use the most important text from your prompt.
+        </p>
 
         <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {PROMPT_EXAMPLES.map((example) => (
@@ -284,9 +284,8 @@ export function BrowserAutomationCenter() {
                     {item.target ? item.target : 'No extra target captured'}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    {`Runs at ${new Date(item.run_at).toLocaleString()} · ${
-                      item.background ? 'background preference on' : 'normal open'
-                    }`}
+                    {`Runs at ${new Date(item.run_at).toLocaleString()} · ${item.background ? 'background preference on' : 'normal open'
+                      }`}
                   </p>
                 </div>
                 <button

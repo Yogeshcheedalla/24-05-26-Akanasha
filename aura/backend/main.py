@@ -20,8 +20,9 @@ from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -56,6 +57,58 @@ planner_reminder_history: list[dict[str, Any]] = []
 toast_notifier = ToastNotifier() if ToastNotifier else None
 REMINDER_MARKER_DIR = Path(tempfile.gettempdir()) / "akansha-reminders"
 
+
+def next_chat_display_order(db: Session, session_id: str) -> float:
+    value = (
+        db.query(func.max(ChatMessage.display_order))
+        .filter(ChatMessage.session_id == session_id)
+        .scalar()
+    )
+    if value is None:
+        id_value = db.query(func.max(ChatMessage.id)).filter(ChatMessage.session_id == session_id).scalar()
+        return float(id_value or 0) + 1
+    return float(value) + 1
+
+
+def prepare_message_insert_order(
+    db: Session,
+    session_id: str,
+    continue_from_message_id: int | None,
+    slots: int,
+) -> float:
+    normalized_session_id = session_id or "default"
+    if not continue_from_message_id:
+        return next_chat_display_order(db, normalized_session_id)
+
+    anchor = (
+        db.query(ChatMessage)
+        .filter(
+            ChatMessage.id == continue_from_message_id,
+            ChatMessage.session_id == normalized_session_id,
+        )
+        .first()
+    )
+    if not anchor:
+        return next_chat_display_order(db, normalized_session_id)
+
+    anchor_order = float(anchor.display_order if anchor.display_order is not None else anchor.id)
+    if anchor.display_order is None:
+        anchor.display_order = anchor_order
+        db.add(anchor)
+
+    (
+        db.query(ChatMessage)
+        .filter(
+            ChatMessage.session_id == normalized_session_id,
+            ChatMessage.display_order > anchor_order,
+        )
+        .update(
+            {ChatMessage.display_order: ChatMessage.display_order + float(slots)},
+            synchronize_session=False,
+        )
+    )
+    return anchor_order + 1
+
 # @app.on_event("startup")
 # def reset_database():
 #     import traceback
@@ -82,17 +135,25 @@ class ChatRequest(BaseModel):
     response_style: str | None = None
     conversation_mode: str | None = None
     language_preference: str | None = None
+    attachments: list[dict] | None = None
+    continue_from_message_id: int | None = None
 
 
 class ChatMessageSaveRequest(BaseModel):
     role: str
     content: str
     session_id: str
+    continue_from_message_id: int | None = None
+
+
+class ChatMessagePinRequest(BaseModel):
+    pinned: bool
 
 
 class ProfileUpdateRequest(BaseModel):
     full_name: str | None = None
     email: str | None = None
+    bio: str | None = None
     preferred_mode: str | None = None
     voice_gender: str | None = None
     voice_tone: str | None = None
@@ -102,6 +163,36 @@ class ProfileUpdateRequest(BaseModel):
     interrupt_enabled: bool | None = None
     username: str | None = None
     password: str | None = None
+
+
+class AuthOtpRequest(BaseModel):
+    email: str
+    purpose: str = "login"
+
+
+class AuthOtpVerifyRequest(BaseModel):
+    email: str
+    code: str
+    purpose: str | None = None
+
+
+class AuthPasswordLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthRegisterRequest(BaseModel):
+    full_name: str
+    email: str
+    username: str | None = None
+    password: str
+    code: str
+
+
+class AuthResetPasswordRequest(BaseModel):
+    email: str
+    code: str
+    new_password: str
 
 
 class ReminderRequest(BaseModel):
@@ -172,6 +263,8 @@ class SpeakerProfileRequest(BaseModel):
     relationship_to_owner: str | None = None
     access_level: str | None = None
     notes: str | None = None
+    last_heard_text: str | None = None
+    voice_signature: dict[str, Any] | None = None
 
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -218,6 +311,7 @@ def serialize_profile(profile: UserProfile) -> dict[str, Any]:
     return {
         "full_name": profile.full_name,
         "email": profile.email,
+        "bio": profile.bio,
         "preferred_mode": profile.preferred_mode,
         "voice_gender": profile.voice_gender,
         "voice_tone": profile.voice_tone,
@@ -232,6 +326,13 @@ def serialize_profile(profile: UserProfile) -> dict[str, Any]:
 
 
 def serialize_speaker_profile(profile: SpeakerProfile) -> dict[str, Any]:
+    voice_signature: dict[str, Any] | None = None
+    if profile.voice_signature_json:
+        try:
+            voice_signature = json.loads(profile.voice_signature_json)
+        except json.JSONDecodeError:
+            voice_signature = None
+
     return {
         "id": profile.id,
         "display_name": profile.display_name,
@@ -239,12 +340,25 @@ def serialize_speaker_profile(profile: SpeakerProfile) -> dict[str, Any]:
         "access_level": profile.access_level,
         "notes": profile.notes,
         "last_intro_text": profile.last_intro_text,
+        "last_heard_text": profile.last_heard_text,
+        "voice_signature": voice_signature,
         "timestamp": profile.timestamp.isoformat() if profile.timestamp else None,
     }
 
 
 def _speaker_access_level(relationship: str | None) -> str:
     normalized = (relationship or "").strip().lower()
+    relationship_aliases = {
+        "amma": "mother",
+        "mom": "mother",
+        "mummy": "mother",
+        "dad": "father",
+        "nanna": "father",
+        "self": "owner",
+        "me": "owner",
+        "myself": "owner",
+    }
+    normalized = relationship_aliases.get(normalized, normalized)
     if normalized in {"owner", "self", "me", "myself"}:
         return "owner"
     if normalized in {"mother", "mom", "mummy", "amma", "father", "dad", "nanna", "sister", "brother", "wife", "husband", "friend"}:
@@ -296,6 +410,7 @@ def detect_text_language_mode(text: str) -> str:
     telugu_chars = len(re.findall(r"[\u0C00-\u0C7F]", text))
     hindi_chars = len(re.findall(r"[\u0900-\u097F]", text))
     latin_chars = len(re.findall(r"[A-Za-z]", text))
+    words = set(re.findall(r"[A-Za-z]+", text.lower()))
     if hindi_chars and latin_chars:
         return "hindi"
     if hindi_chars:
@@ -304,6 +419,10 @@ def detect_text_language_mode(text: str) -> str:
         return "mixed"
     if telugu_chars:
         return "telugu"
+    if {"namaste", "hindi", "kaise", "kya", "mujhe", "aap", "hai", "nahi", "batao"} & words:
+        return "hindi"
+    if {"telugu", "anna", "andi", "naku", "naaku", "meeru", "ela", "unnaru", "cheppu"} & words:
+        return "mixed"
     return "english"
 
 
@@ -345,7 +464,9 @@ def get_edge_tts_prosody(voice_tone: str | None) -> tuple[str, str]:
 
 
 async def generate_edge_tts_audio(text: str, voice_gender: str, voice_tone: str | None, language_mode: str | None) -> bytes:
-    resolved_mode = language_mode or detect_text_language_mode(text)
+    detected_mode = detect_text_language_mode(text)
+    requested_mode = (language_mode or "").lower()
+    resolved_mode = detected_mode if requested_mode in {"", "english"} and detected_mode != "english" else (requested_mode or detected_mode)
     voice_name = get_edge_voice_name(voice_gender, resolved_mode)
     rate, pitch = get_edge_tts_prosody(voice_tone)
 
@@ -379,7 +500,6 @@ def show_windows_notification(title: str, body: str) -> None:
                 duration=10,
                 threaded=False,
             )
-            return
         except Exception:
             pass
 
@@ -1139,6 +1259,73 @@ def extract_field_value(prompt: str, field_names: list[str]) -> str | None:
     return None
 
 
+FORM_FIELD_ALIASES: list[tuple[str, list[str]]] = [
+    ("full_name", ["full name", "name"]),
+    ("email", ["email", "mail id", "email id"]),
+    ("phone", ["phone number", "mobile number", "mobile", "phone", "contact number"]),
+    ("username", ["username", "user name", "user id", "login id"]),
+    ("password", ["password", "passcode"]),
+    ("address", ["address"]),
+    ("city", ["city"]),
+    ("state", ["state"]),
+    ("country", ["country"]),
+    ("college", ["college", "school", "university"]),
+    ("company", ["company", "organization", "organisation"]),
+    ("message", ["message", "text", "comment", "description"]),
+]
+
+
+def _clean_form_value(value: str) -> str:
+    cleaned = value.strip().strip("\"' .,;:")
+    cleaned = re.sub(
+        r"\s+\b(?:and\s+)?(?:before\s+submitting|before\s+submit|before\s+submission|ask\s+before\s+submit|pop\s*up\s+notification|notify\s+me|submit\s+it|click\s+submit)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned.strip().strip("\"' .,;:")
+
+
+def extract_form_fill_values(prompt: str) -> list[str]:
+    aliases = [alias for _, alias_list in FORM_FIELD_ALIASES for alias in alias_list]
+    marker_pattern = "|".join(re.escape(alias) for alias in sorted(aliases, key=len, reverse=True))
+    found: list[tuple[int, str, str]] = []
+
+    for field_key, field_aliases in FORM_FIELD_ALIASES:
+        for alias in field_aliases:
+            pattern = (
+                rf"\b{re.escape(alias)}\b\s*(?:is|=|:|-)?\s*"
+                rf"(.+?)(?=\s+(?:and\s+|then\s+)?(?:{marker_pattern})\b\s*(?:is|=|:|-)?|"
+                rf"\s+\b(?:before\s+submitting|before\s+submit|before\s+submission|ask\s+before\s+submit|"
+                rf"pop\s*up\s+notification|notify\s+me|submit\s+it|click\s+submit)\b|$)"
+            )
+            match = re.search(pattern, prompt, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                value = _clean_form_value(match.group(1))
+                if value:
+                    found.append((match.start(), field_key, value))
+                break
+
+    ordered: list[str] = []
+    seen_fields: set[str] = set()
+    for _, field_key, value in sorted(found, key=lambda item: item[0]):
+        if field_key not in seen_fields:
+            ordered.append(value)
+            seen_fields.add(field_key)
+    return ordered
+
+
+def should_confirm_before_submit(prompt: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(before\s+submitting|before\s+submit|before\s+submission|ask\s+before\s+submit|"
+            r"notify\s+me\s+before\s+submit|pop\s*up\s+notification|popup\s+notification|wait\s+before\s+submit)\b",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def extract_login_credentials(prompt: str) -> tuple[str | None, str | None]:
     username_match = re.search(
         r"\b(?:username|user\s*id|login\s*id|email)\b\s*[-:=]?\s*(.+?)(?=\s+\b(?:password|passcode)\b|$)",
@@ -1374,7 +1561,7 @@ def _normalize_whatsapp_allowed_contact(contact: str | None) -> str | None:
         "mamma": "Amma",
         "mumy": "Amma",
     }
-    return allowed_aliases.get(normalized)
+    return allowed_aliases.get(normalized) if normalized in allowed_aliases else None
 
 
 def _whatsapp_safety_clarification(contact: str | None) -> dict[str, Any] | None:
@@ -1638,9 +1825,62 @@ def is_complex_site_workflow(prompt: str) -> bool:
     return any(token in lowered for token in workflow_tokens)
 
 
+def _automation_caution_response(prompt: str) -> dict[str, Any] | None:
+    lowered = prompt.lower()
+    risky_patterns = [
+        r"\bshutdown\b",
+        r"\brestart\b",
+        r"\bsign\s*out\b",
+        r"\blog\s*out\b",
+        r"\bformat\b",
+        r"\bfactory\s+reset\b",
+        r"\bdelete\s+(?:my\s+)?account\b",
+        r"\bdelete\s+(?:all|everything)\b",
+        r"\bclear\s+(?:all|everything|history|chat history|browser history)\b",
+        r"\bremove\s+(?:all|everything)\b",
+    ]
+    if any(re.search(pattern, lowered) for pattern in risky_patterns):
+        return {
+            "summary": (
+                "That command can change or remove important data/session state. "
+                "Please confirm with the exact words: yes, run this risky action."
+            ),
+            "steps": [],
+            "needs_clarification": True,
+            "caution": True,
+        }
+    return None
+
+
+def _extract_ordinal_number(prompt: str) -> int | None:
+    lowered = prompt.lower()
+    ordinal_words = {
+        "first": 1,
+        "second": 2,
+        "third": 3,
+        "fourth": 4,
+        "fifth": 5,
+        "sixth": 6,
+        "seventh": 7,
+        "eighth": 8,
+        "ninth": 9,
+        "tenth": 10,
+    }
+    for word, value in ordinal_words.items():
+        if re.search(rf"\b{word}\b", lowered):
+            return value
+    match = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)\b", lowered)
+    if match:
+        return max(1, min(int(match.group(1)), 10))
+    return None
+
+
 def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
     normalized = normalize_browser_automation_prompt(prompt)
     lowered = normalized.lower()
+    caution_response = _automation_caution_response(normalized)
+    if caution_response:
+        return caution_response
     url_or_domain = extract_first_url_or_domain(normalized)
     normalized_domain = normalize_domain(url_or_domain) or detect_known_site(normalized)
     windows_path = extract_windows_path(normalized)
@@ -1690,7 +1930,20 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     summary = "Prepared a browser automation plan."
 
-    if any(token in lowered for token in ["close tab", "remove tab"]):
+    submit_confirmation = should_confirm_before_submit(normalized)
+    submit_followup = bool(
+        re.fullmatch(
+            r"(?:ok|okay|yes|all ok|all okay|confirmed|confirm|go ahead|now)?\s*submit(?:\s+it|\s+the\s+form|\s+now)?",
+            lowered,
+        )
+        or re.search(r"\b(?:ok|okay|yes|all\s+ok|all\s+okay|confirmed|confirm|go\s+ahead|now)\b.*\bsubmit\b", lowered)
+    )
+    if submit_followup and not submit_confirmation:
+        steps.append({"action": "press_key", "target": "enter", "payload": {"key": "enter"}})
+        summary = "Submitting the currently focused form after your confirmation."
+        return {"summary": summary, "steps": steps}
+
+    if re.search(r"\b(?:close|remove)\b.*\btab\b", lowered):
         steps.append({"action": "close_tab"})
         summary = "Closing the current browser tab."
         return {"summary": summary, "steps": steps}
@@ -1705,12 +1958,98 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
         summary = "Clearing the active draft or field."
         return {"summary": summary, "steps": steps}
 
+    scroll_requested = bool(re.search(r"\bscroll\b|\bpage\s+(?:up|down)\b", lowered))
+    if is_open_request and normalized_domain and scroll_requested and "play" not in lowered:
+        direction = "up" if re.search(r"\b(?:scroll\s+up|page\s+up)\b", lowered) else "down"
+        amount_match = re.search(r"\b(?:by|for)\s+(\d{1,2})\b", lowered)
+        amount = int(amount_match.group(1)) if amount_match else (3 if "one by one" in lowered else 6)
+        target_url = url_or_domain or f"https://{normalized_domain}"
+        steps.append({"action": "open_url", "target": target_url})
+        steps.append({"action": "wait", "payload": {"seconds": 2.0}})
+        steps.append({"action": "scroll", "target": direction, "payload": {"direction": direction, "amount": amount}})
+        summary = f"Opening {normalized_domain} and scrolling {direction} in the active window."
+        return {"summary": summary, "steps": steps}
+
+    if any(token in lowered for token in ["scroll down", "page down", "scroll one by one"]):
+        amount_match = re.search(r"\b(?:by|for)\s+(\d{1,2})\b", lowered)
+        amount = int(amount_match.group(1)) if amount_match else (3 if "one by one" in lowered else 6)
+        steps.append({"action": "scroll", "target": "down", "payload": {"direction": "down", "amount": amount}})
+        summary = "Scrolling down in the active window."
+        return {"summary": summary, "steps": steps}
+
+    if any(token in lowered for token in ["scroll up", "page up"]):
+        amount_match = re.search(r"\b(?:by|for)\s+(\d{1,2})\b", lowered)
+        amount = int(amount_match.group(1)) if amount_match else 6
+        steps.append({"action": "scroll", "target": "up", "payload": {"direction": "up", "amount": amount}})
+        summary = "Scrolling up in the active window."
+        return {"summary": summary, "steps": steps}
+
+    shortcut_commands = [
+        (("select all",), ["ctrl", "a"], "Selecting all content in the active window."),
+        (("copy", "copy this"), ["ctrl", "c"], "Copying the current selection."),
+        (("paste", "paste it"), ["ctrl", "v"], "Pasting into the active window."),
+        (("cut", "cut this"), ["ctrl", "x"], "Cutting the current selection."),
+        (("undo",), ["ctrl", "z"], "Undoing the last active-window change."),
+        (("redo",), ["ctrl", "y"], "Redoing the last active-window change."),
+        (("save", "save file", "save this"), ["ctrl", "s"], "Saving the active file or page."),
+    ]
+    for phrases, keys, shortcut_summary in shortcut_commands:
+        if any(re.search(rf"\b{re.escape(phrase)}\b", lowered) for phrase in phrases):
+            steps.append({"action": "hotkey", "payload": {"keys": keys}})
+            return {"summary": shortcut_summary, "steps": steps}
+
+    key_match = re.search(
+        r"\bpress\s+(enter|return|escape|esc|tab|space|spacebar|backspace|delete|home|end|page up|page down|up|down|left|right)\b",
+        lowered,
+    )
+    if key_match:
+        key_name = key_match.group(1).replace(" ", "")
+        steps.append({"action": "press_key", "target": key_name, "payload": {"key": key_name}})
+        summary = f"Pressing {key_match.group(1)} in the active window."
+        return {"summary": summary, "steps": steps}
+
+    compound_volume_match = re.search(r"\b(?:volume|sound|audio)?\s*(?:to|at|on)\s+(\d{1,3})\s*%?\b", lowered)
+    compound_result_index = _extract_ordinal_number(normalized)
+    if "play" in lowered and compound_volume_match and any(token in lowered for token in ["song", "result", "video", "track", "music"]):
+        volume_amount = max(0, min(int(compound_volume_match.group(1)), 100))
+        result_index = compound_result_index or 1
+        query_source = (
+            normalized[: compound_volume_match.start()]
+            + " "
+            + normalized[compound_volume_match.end() :]
+        )
+        query = re.sub(
+            r"\b(open|youtube|play|please|and|then|now|the|song|songs|music|movie|movies|result|video|track|volume|sound|audio|to|at|on|first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\b",
+            " ",
+            query_source,
+            flags=re.IGNORECASE,
+        )
+        query = " ".join(query.split()).strip(" .")
+        steps.append({"action": "set_volume", "payload": {"amount": volume_amount}})
+        if query:
+            steps.append(
+                {
+                    "action": "open_youtube_song",
+                    "target": query,
+                    "payload": {"play": True, "index": result_index, "wait_seconds": 3.0},
+                }
+            )
+            summary = f"Setting volume to {volume_amount}% and playing YouTube result {result_index} for {query}."
+        else:
+            steps.append({"action": "click_youtube_result", "target": str(result_index), "payload": {"amount": result_index}})
+            summary = f"Setting volume to {volume_amount}% and playing YouTube result {result_index}."
+        return {"summary": summary, "steps": steps}
+
     if any(token in lowered for token in ["volume", "sound", "audio"]):
-        amount_match = re.search(r"\b(?:by|to)\s+(\d{1,3})\b", lowered)
+        amount_match = re.search(r"\b(?:by|to|at|on)\s+(\d{1,3})\s*%?\b", lowered)
         amount = int(amount_match.group(1)) if amount_match else 5
         if any(token in lowered for token in ["mute", "silent", "silence"]):
             steps.append({"action": "volume_mute"})
             summary = "Toggling system mute."
+            return {"summary": summary, "steps": steps}
+        if amount_match and any(token in lowered for token in ["set", "make", "to", "at", "on", "volume"]):
+            steps.append({"action": "set_volume", "payload": {"amount": amount}})
+            summary = f"Setting system volume to {amount}%."
             return {"summary": summary, "steps": steps}
         if any(token in lowered for token in ["increase", "raise", "up", "higher", "louder"]):
             steps.append({"action": "volume_up", "payload": {"amount": amount}})
@@ -1720,6 +2059,74 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
             steps.append({"action": "volume_down", "payload": {"amount": amount}})
             summary = "Decreasing system volume."
             return {"summary": summary, "steps": steps}
+
+    if any(token in lowered for token in ["pause", "resume", "play pause", "play/pause"]):
+        steps.append({"action": "media_play_pause"})
+        summary = "Toggling media playback."
+        return {"summary": summary, "steps": steps}
+
+    if any(token in lowered for token in ["next song", "next track", "skip song", "skip track"]):
+        steps.append({"action": "media_next"})
+        summary = "Skipping to the next media item."
+        return {"summary": summary, "steps": steps}
+
+    if any(token in lowered for token in ["previous song", "previous track", "back song", "last song"]):
+        steps.append({"action": "media_previous"})
+        summary = "Returning to the previous media item."
+        return {"summary": summary, "steps": steps}
+
+    form_values = extract_form_fill_values(normalized)
+    form_context = bool(
+        re.search(
+            r"\b(fill|type|enter|complete|edit)\b.*\b(detail|details|form|field|fields|application|website|site|page)\b",
+            lowered,
+        )
+        or re.search(r"\b(name|email|phone|mobile|username|password|address|city|message)\b", lowered)
+    )
+    if form_values and form_context:
+        target_url = url_or_domain or (f"https://{normalized_domain}" if normalized_domain else None)
+        if target_url:
+            steps.append({"action": "open_url", "target": target_url})
+            steps.append({"action": "wait", "payload": {"seconds": 2.2}})
+
+        should_submit_now = bool(re.search(r"\b(submit|sign\s+in|login|log\s+in)\b", lowered)) and not submit_confirmation
+        steps.append(
+            {
+                "action": "type_sequence",
+                "payload": {
+                    "values": form_values,
+                    "submit": should_submit_now,
+                    "tab_presses_before": 0,
+                    "type_interval": 0.04,
+                    "step_delay": 0.12,
+                    "clear_each": True,
+                },
+            }
+        )
+        if submit_confirmation:
+            steps.append(
+                {
+                    "action": "notify_user",
+                    "payload": {
+                        "title": "Akansha is waiting before submit",
+                        "body": "I filled the requested details. Say okay submit when you want me to press submit.",
+                    },
+                }
+            )
+            summary = "Opening the requested page, filling the details, and waiting for your submit confirmation."
+        else:
+            summary = (
+                "Opening the requested page and filling the details."
+                if target_url
+                else "Filling the provided details into the active form fields."
+            )
+        return {"summary": summary, "steps": steps}
+
+    youtube_result_index = _extract_ordinal_number(normalized)
+    if youtube_result_index and "play" in lowered and any(token in lowered for token in ["song", "result", "video", "track"]):
+        steps.append({"action": "click_youtube_result", "target": str(youtube_result_index), "payload": {"amount": youtube_result_index}})
+        summary = f"Playing YouTube result {youtube_result_index} in the active browser."
+        return {"summary": summary, "steps": steps}
 
     if any(token in lowered for token in ["brightness", "screen light", "display light"]):
         amount_match = re.search(r"\b(?:by|to|at)\s+(\d{1,3})\s*%?\b", lowered)
@@ -1738,15 +2145,22 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
             return {"summary": summary, "steps": steps}
 
     if "play" in lowered and any(token in lowered for token in ["song", "songs", "music", "movie", "movies"]):
+        result_index = _extract_ordinal_number(normalized) or 1
         query = search_phrase or re.sub(
-            r"\b(open|youtube|play|please|song|songs|music|movie|movies)\b",
+            r"\b(open|youtube|play|please|song|songs|music|movie|movies|first|second|third|fourth|fifth|\d+(?:st|nd|rd|th)?)\b",
             " ",
             normalized,
             flags=re.IGNORECASE,
         )
         query = " ".join(query.split()).strip(" .") or normalized
-        steps.append({"action": "open_youtube_song", "target": query})
-        summary = f"Opening YouTube and searching for {query}."
+        steps.append(
+            {
+                "action": "open_youtube_song",
+                "target": query,
+                "payload": {"play": True, "index": result_index, "wait_seconds": 3.0},
+            }
+        )
+        summary = f"Opening YouTube, searching for {query}, and selecting result {result_index}."
         return {"summary": summary, "steps": steps}
 
     if normalized_domain == "codechef.com" and any(token in lowered for token in ["practice", "problem section", "practice problem"]):
@@ -2196,8 +2610,20 @@ def build_browser_prompt_plan(prompt: str) -> dict[str, Any]:
 
     if "youtube" in lowered:
         query = search_phrase or normalized
-        steps.append({"action": "open_youtube_song", "target": query})
-        summary = f"Opening YouTube and searching for {query}."
+        result_index = _extract_ordinal_number(normalized) or 1
+        should_play = "play" in lowered or "open" in lowered
+        steps.append(
+            {
+                "action": "open_youtube_song",
+                "target": query,
+                "payload": {"play": should_play, "index": result_index, "wait_seconds": 3.0},
+            }
+        )
+        summary = (
+            f"Opening YouTube, searching for {query}, and selecting result {result_index}."
+            if should_play
+            else f"Opening YouTube and searching for {query}."
+        )
         return {"summary": summary, "steps": steps}
 
     if search_phrase:
@@ -2666,57 +3092,132 @@ def suggest_social_replies(message: InboxMessage) -> list[str]:
 
 
 # --- OTP Auth Endpoints ---
-otp_store: dict[str, str] = {}
+otp_store: dict[str, dict[str, Any]] = {}
+OTP_TTL_SECONDS = 10 * 60
+AUTH_PURPOSES = {"login", "signup", "reset"}
 
-class OTPRequest(BaseModel):
-    email: str
 
-class OTPVerifyRequest(BaseModel):
-    email: str
-    code: str
+def normalize_auth_email(email: str) -> str:
+    normalized = " ".join((email or "").strip().split()).lower()
+    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", normalized):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    return normalized
+
+
+def normalize_auth_purpose(purpose: str | None) -> str:
+    normalized = (purpose or "login").strip().lower()
+    if normalized not in AUTH_PURPOSES:
+        raise HTTPException(status_code=400, detail="Unsupported authentication purpose.")
+    return normalized
+
+
+def hash_password(password: str) -> str:
+    if len(password or "") < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000).hex()
+    return f"pbkdf2_sha256$120000${salt}${digest}"
+
+
+def verify_password(password: str, stored_hash: str | None) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        algorithm, rounds_text, salt, digest = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return hmac.compare_digest(password, stored_hash)
+        computed = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            int(rounds_text),
+        ).hex()
+        return hmac.compare_digest(computed, digest)
+    except Exception:
+        return False
+
+
+def create_auth_token(email: str) -> str:
+    payload = f"{email}:{secrets.token_hex(24)}"
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def consume_otp(email: str, code: str, purpose: str | None = None) -> None:
+    normalized_email = normalize_auth_email(email)
+    expected_purpose = normalize_auth_purpose(purpose) if purpose else None
+    record = otp_store.get(normalized_email)
+    if not record:
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP code.")
+
+    if datetime.now(timezone.utc) > record["expires_at"]:
+        otp_store.pop(normalized_email, None)
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP code.")
+
+    if expected_purpose and record["purpose"] != expected_purpose:
+        raise HTTPException(status_code=400, detail="OTP was requested for a different action.")
+
+    record["attempts"] = int(record.get("attempts", 0)) + 1
+    if record["attempts"] > 5:
+        otp_store.pop(normalized_email, None)
+        raise HTTPException(status_code=400, detail="Too many OTP attempts. Request a new code.")
+
+    if not hmac.compare_digest(str(record["code"]), str(code or "").strip()):
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP code.")
+
+    otp_store.pop(normalized_email, None)
+
+
+def auth_user_payload(user: UserProfile) -> dict[str, Any]:
+    return {
+        "email": user.email,
+        "full_name": user.full_name,
+        "username": user.username,
+        "google_connected": user.google_connected,
+        "google_email": user.google_email,
+    }
+
 
 @app.post("/api/auth/send-otp")
-def send_otp(req: OTPRequest):
+def send_otp(req: AuthOtpRequest):
     import smtplib
     from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
-    
-    if not req.email:
-        raise HTTPException(status_code=400, detail="Email is required.")
-    
+
+    email = normalize_auth_email(req.email)
+    purpose = normalize_auth_purpose(req.purpose)
     code = f"{secrets.randbelow(1000000):06d}"
-    otp_store[req.email.lower()] = code
-    
-    print(f"\n[{datetime.now().isoformat()}] OTP generated for {req.email}: {code}\n")
-    
+    otp_store[email] = {
+        "code": code,
+        "purpose": purpose,
+        "attempts": 0,
+        "expires_at": datetime.now(timezone.utc) + timedelta(seconds=OTP_TTL_SECONDS),
+    }
+
+    print(f"\n[{datetime.now().isoformat()}] OTP generated for {email} ({purpose}): {code}\n")
+
     # SMTP Sending Logic
     smtp_email = os.getenv("SMTP_EMAIL")
     smtp_password = os.getenv("SMTP_PASSWORD")
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    email_dispatched = False
 
     if smtp_email and smtp_password:
         try:
             msg = MIMEMultipart()
             # Note: Gmail SMTP often requires the 'From' address to be exactly the authenticated email
             msg['From'] = smtp_email
-            msg['To'] = req.email
+            msg['To'] = email
             msg['Subject'] = f"{code} is your Akansha Verification Sequence"
 
             body = f"""
-[ AUTHENTICATION SEQUENCE INITIALIZED ]
+Akansha authentication code
 
-Hello Operator,
+Your {purpose} verification code is: {code}
 
-Your secure identity verification code is: {code}
+This code expires in 10 minutes.
 
-Please enter this sequence in the Wwise Enchart Autonomous Agent interface to complete your uplink.
-This sequence is valid for a single session and will expire shortly.
-
-If you did not request this sequence, please ignore this transmission.
-
-[ SYSTEM STATUS: SECURE ]
-[ UPLINK ORIGIN: AKANSHA_AI_ENGINE ]
+If you did not request this, ignore this email.
             """
             msg.attach(MIMEText(body, 'plain'))
 
@@ -2726,24 +3227,26 @@ If you did not request this sequence, please ignore this transmission.
             server.starttls()
             server.ehlo()
             server.login(smtp_email, smtp_password)
-            server.sendmail(smtp_email, req.email, msg.as_string())
+            server.sendmail(smtp_email, email, msg.as_string())
             server.quit()
-            print(f"Email successfully dispatched to {req.email}")
+            email_dispatched = True
+            print(f"Email successfully dispatched to {email}")
         except Exception as e:
             print(f"CRITICAL ERROR: Failed to dispatch email: {e}")
     else:
         print("WARNING: SMTP credentials missing. Email dispatch skipped.")
     
-    return {"success": True, "message": f"OTP sent to {req.email}"}
+    response = {"success": True, "message": f"OTP sent to {email}", "expires_in_seconds": OTP_TTL_SECONDS}
+    if not email_dispatched:
+        response["dev_code"] = code
+        response["message"] = "SMTP is not configured. Use the development code returned by this local backend."
+    return response
 
 @app.post("/api/auth/verify-otp")
-def verify_otp(req: OTPVerifyRequest, db: Session = Depends(get_db)):
-    email = req.email.lower()
-    if email not in otp_store or otp_store[email] != req.code:
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP code.")
-    
-    del otp_store[email]
-    
+def verify_otp(req: AuthOtpVerifyRequest, db: Session = Depends(get_db)):
+    email = normalize_auth_email(req.email)
+    consume_otp(email, req.code, req.purpose)
+
     user = db.query(UserProfile).filter(UserProfile.email == email).first()
     if not user:
         user = UserProfile(email=email, full_name=email.split('@')[0])
@@ -2752,21 +3255,70 @@ def verify_otp(req: OTPVerifyRequest, db: Session = Depends(get_db)):
         db.refresh(user)
     
     return {
-        "success": True, 
-        "token": f"mock-jwt-token-{secrets.token_hex(8)}", 
-        "user": {
-            "email": user.email, 
-            "full_name": user.full_name
-        }
+        "success": True,
+        "token": create_auth_token(email),
+        "user": auth_user_payload(user),
     }
+
+
+@app.post("/api/auth/register")
+def register_with_email(req: AuthRegisterRequest, db: Session = Depends(get_db)):
+    email = normalize_auth_email(req.email)
+    consume_otp(email, req.code, "signup")
+    full_name = " ".join(req.full_name.strip().split())
+    if len(full_name) < 2:
+        raise HTTPException(status_code=400, detail="Full name is required.")
+
+    existing = db.query(UserProfile).filter(UserProfile.email == email).first()
+    if existing and existing.password:
+        raise HTTPException(status_code=409, detail="An account already exists for this email.")
+
+    user = existing or UserProfile(email=email)
+    user.full_name = full_name
+    user.username = (req.username or email.split("@")[0]).strip()[:80]
+    user.password = hash_password(req.password)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"success": True, "token": create_auth_token(email), "user": auth_user_payload(user)}
+
+
+@app.post("/api/auth/login")
+def login_with_password(req: AuthPasswordLoginRequest, db: Session = Depends(get_db)):
+    email = normalize_auth_email(req.email)
+    user = db.query(UserProfile).filter(UserProfile.email == email).first()
+    if not user or not verify_password(req.password, user.password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    return {"success": True, "token": create_auth_token(email), "user": auth_user_payload(user)}
+
+
+@app.post("/api/auth/reset-password")
+def reset_password(req: AuthResetPasswordRequest, db: Session = Depends(get_db)):
+    email = normalize_auth_email(req.email)
+    consume_otp(email, req.code, "reset")
+    user = db.query(UserProfile).filter(UserProfile.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="No account exists for this email.")
+    user.password = hash_password(req.new_password)
+    db.add(user)
+    db.commit()
+    return {"success": True, "message": "Password reset successfully."}
 
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     if not req.message:
         raise HTTPException(status_code=400, detail="Message is empty")
 
+    user_order = prepare_message_insert_order(db, req.session_id, req.continue_from_message_id, slots=2)
+
     # Save User Message
-    user_msg = ChatMessage(role="user", content=req.message, session_id=req.session_id)
+    user_msg = ChatMessage(
+        role="user",
+        content=req.message,
+        session_id=req.session_id,
+        display_order=user_order,
+        branch_from_id=req.continue_from_message_id,
+    )
     db.add(user_msg)
     db.commit()
 
@@ -2780,11 +3332,18 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks, db:
             response_style=req.response_style,
             conversation_mode=req.conversation_mode,
             language_preference=req.language_preference,
+            attachments=req.attachments,
         )
         response_text = "".join(list(response_generator))
         
         # Save Assistant Message
-        ai_msg = ChatMessage(role="assistant", content=response_text, session_id=req.session_id)
+        ai_msg = ChatMessage(
+            role="assistant",
+            content=response_text,
+            session_id=req.session_id,
+            display_order=user_order + 1,
+            branch_from_id=req.continue_from_message_id,
+        )
         db.add(ai_msg)
         db.commit()
 
@@ -2805,10 +3364,13 @@ def save_chat_message(req: ChatMessageSaveRequest, db: Session = Depends(get_db)
     if not req.content.strip():
         raise HTTPException(status_code=400, detail="Message content is empty.")
 
+    order = prepare_message_insert_order(db, req.session_id or "default", req.continue_from_message_id, slots=1)
     message = ChatMessage(
         role=req.role,
         content=req.content.strip(),
         session_id=req.session_id or "default",
+        display_order=order,
+        branch_from_id=req.continue_from_message_id,
     )
     db.add(message)
     db.commit()
@@ -2821,6 +3383,33 @@ def save_chat_message(req: ChatMessageSaveRequest, db: Session = Depends(get_db)
             "role": message.role,
             "content": message.content,
             "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+            "pinned": bool(getattr(message, "pinned", False)),
+            "display_order": message.display_order,
+            "branch_from_id": message.branch_from_id,
+        }
+    }
+
+
+@app.patch("/api/chat/message/{message_id}/pin")
+def update_chat_message_pin(message_id: int, req: ChatMessagePinRequest, db: Session = Depends(get_db)):
+    message = db.query(ChatMessage).filter(ChatMessage.id == message_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found.")
+
+    message.pinned = bool(req.pinned)
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    return {
+        "message": {
+            "id": message.id,
+            "session_id": message.session_id,
+            "role": message.role,
+            "content": message.content,
+            "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+            "pinned": bool(message.pinned),
+            "display_order": message.display_order,
+            "branch_from_id": message.branch_from_id,
         }
     }
 
@@ -2832,7 +3421,14 @@ async def chat_stream_endpoint(
     if not req.message:
         raise HTTPException(status_code=400, detail="Message is empty")
 
-    user_msg = ChatMessage(role="user", content=req.message, session_id=req.session_id)
+    user_order = prepare_message_insert_order(db, req.session_id, req.continue_from_message_id, slots=2)
+    user_msg = ChatMessage(
+        role="user",
+        content=req.message,
+        session_id=req.session_id,
+        display_order=user_order,
+        branch_from_id=req.continue_from_message_id,
+    )
     db.add(user_msg)
     db.commit()
 
@@ -2847,15 +3443,22 @@ async def chat_stream_endpoint(
                 response_style=req.response_style,
                 conversation_mode=req.conversation_mode,
                 language_preference=req.language_preference,
+                attachments=req.attachments,
             ):
                 response_text += chunk
                 yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
 
-            ai_msg = ChatMessage(role="assistant", content=response_text, session_id=req.session_id)
+            ai_msg = ChatMessage(
+                role="assistant",
+                content=response_text,
+                session_id=req.session_id,
+                display_order=user_order + 1,
+                branch_from_id=req.continue_from_message_id,
+            )
             db.add(ai_msg)
             db.commit()
             background_tasks.add_task(analyze_intent_and_memory, db, req.message, response_text)
-            yield f"data: {json.dumps({'type': 'done', 'content': response_text})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'content': response_text, 'user_message_id': user_msg.id, 'assistant_message_id': ai_msg.id})}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
 
@@ -2867,7 +3470,7 @@ def get_chat_history(session_id: str | None = None, db: Session = Depends(get_db
     if session_id:
         query = query.filter(ChatMessage.session_id == session_id)
 
-    messages = query.order_by(ChatMessage.id.asc()).all()
+    messages = query.order_by(ChatMessage.display_order.asc(), ChatMessage.id.asc()).all()
     return {
         "messages": [
             {
@@ -2878,6 +3481,9 @@ def get_chat_history(session_id: str | None = None, db: Session = Depends(get_db
                 "timestamp": m.timestamp.isoformat()
                 if hasattr(m, "timestamp") and m.timestamp
                 else None,
+                "pinned": bool(getattr(m, "pinned", False)),
+                "display_order": getattr(m, "display_order", None),
+                "branch_from_id": getattr(m, "branch_from_id", None),
             }
             for m in messages
         ]
@@ -3323,16 +3929,35 @@ def save_voice_speaker(req: SpeakerProfileRequest, db: Session = Depends(get_db)
     if not display_name:
         raise HTTPException(status_code=400, detail="Display name is required.")
 
+    relationship = (req.relationship_to_owner or "").strip().lower() or None
+    relationship_aliases = {
+        "amma": "mother",
+        "mom": "mother",
+        "mummy": "mother",
+        "dad": "father",
+        "nanna": "father",
+        "self": "owner",
+        "me": "owner",
+        "myself": "owner",
+    }
+    relationship = relationship_aliases.get(relationship or "", relationship)
+    access_level = (req.access_level or "").strip().lower() or _speaker_access_level(relationship)
+    if access_level not in {"owner", "trusted", "guest"}:
+        access_level = _speaker_access_level(relationship)
+
     speaker = db.query(SpeakerProfile).filter(SpeakerProfile.display_name.ilike(display_name)).first()
     if not speaker:
         speaker = SpeakerProfile(display_name=display_name)
 
-    speaker.relationship_to_owner = req.relationship_to_owner
-    speaker.access_level = req.access_level or _speaker_access_level(req.relationship_to_owner)
+    speaker.relationship_to_owner = relationship
+    speaker.access_level = access_level
     speaker.notes = req.notes
     speaker.last_intro_text = (
-        f"{display_name} is {req.relationship_to_owner or 'a new speaker'} for Yogesh."
+        f"{display_name} is {relationship or 'a new speaker'} for Yogesh."
     )
+    speaker.last_heard_text = (req.last_heard_text or "").strip() or speaker.last_heard_text
+    if req.voice_signature:
+        speaker.voice_signature_json = json.dumps(req.voice_signature, ensure_ascii=True)
     db.add(speaker)
     db.commit()
     db.refresh(speaker)
@@ -3687,11 +4312,22 @@ def google_callback(code: str, db: Session = Depends(get_db)):
     connection = get_or_create_connection(db, "google")
     update_google_connection(db, connection, profile, token_payload, user_info)
 
-    return {
-        "success": True,
-        "email": user_info.get("email"),
-        "message": "Google account connected. You can return to Akansha now.",
-    }
+    redirect_url = "http://localhost:4030/sign-up-login-screen?google=connected"
+    return HTMLResponse(
+        f"""
+        <!doctype html>
+        <html>
+          <head>
+            <meta http-equiv="refresh" content="0;url={redirect_url}" />
+            <title>Google connected</title>
+          </head>
+          <body style="background:#050814;color:#f8fafc;font-family:Arial,sans-serif">
+            <p>Google account connected. Returning to Akansha...</p>
+            <script>window.location.replace("{redirect_url}")</script>
+          </body>
+        </html>
+        """
+    )
 
 
 @app.post("/api/google/disconnect")

@@ -15,6 +15,10 @@ import {
   Mic,
   MicOff,
   ChevronDown,
+  CheckCheck,
+  Pin,
+  GitBranch,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -42,11 +46,14 @@ export interface Message {
   sessionId?: string;
   model?: string;
   timestamp: Date;
-  attachments?: Array<{ id: string; name: string; type: string; size: string }>;
+  attachments?: Array<{ id: string; name: string; type: string; size: string; previewUrl?: string }>;
   memoryRefs?: string[];
   isStreaming?: boolean;
   tokenCount?: number;
   emotion?: Emotion;
+  pinned?: boolean;
+  displayOrder?: number | null;
+  branchFromId?: number | null;
 }
 
 const INITIAL_MESSAGES: Message[] = [
@@ -104,12 +111,158 @@ const EMOTION_RESPONSES: Record<string, Emotion> = {
   default: 'neutral',
 };
 
+const CHAT_INTERRUPT_PATTERN =
+  /\b(stop|wait|pause|hold on|enough|silent|mute|aagu|aapu|ruko|ruk jao)\b|ఆపు|ఆగు|रुको|बस/i;
+
+const TRANSIENT_SPEECH_ERRORS = new Set(['no-speech', 'aborted', 'audio-capture', 'network']);
+
 function detectEmotion(text: string): Emotion {
   const lower = text.toLowerCase();
   for (const [keyword, emotion] of Object.entries(EMOTION_RESPONSES)) {
     if (lower.includes(keyword)) return emotion;
   }
   return 'neutral';
+}
+
+type ChatAttachmentPayload = {
+  name: string;
+  type: string;
+  size: number;
+  data_url?: string;
+  text?: string;
+};
+
+function chatLanguagePreference() {
+  if (typeof window === 'undefined') return 'telugu_english';
+  const stored =
+    window.localStorage.getItem('akansha_voice_language') ||
+    window.localStorage.getItem('akansha_app_language');
+  if (stored === 'hindi') return 'hindi';
+  if (stored === 'english') return 'english';
+  return 'telugu_english';
+}
+
+function detectSpeechLang(text: string) {
+  const preference = chatLanguagePreference();
+  const hasTelugu = /[\u0C00-\u0C7F]/.test(text);
+  const hasHindi = /[\u0900-\u097F]/.test(text);
+  const words = new Set((text.toLowerCase().match(/[a-z]+/g) ?? []));
+
+  if (hasHindi || preference === 'hindi') return 'hi-IN';
+  if (hasTelugu || preference === 'telugu_english') return 'te-IN';
+  if (
+    ['namaste', 'hindi', 'kaise', 'kya', 'mujhe', 'aap', 'hai', 'nahi', 'batao'].some((word) =>
+      words.has(word)
+    )
+  ) {
+    return 'hi-IN';
+  }
+  if (
+    ['telugu', 'anna', 'andi', 'naku', 'naaku', 'meeru', 'ela', 'unnaru', 'cheppu'].some((word) =>
+      words.has(word)
+    )
+  ) {
+    return 'te-IN';
+  }
+  return 'en-IN';
+}
+
+function getMessageNumericId(message: Message): number | null {
+  if (/^\d+$/.test(message.id)) return Number(message.id);
+  return null;
+}
+
+function insertMessageAfter(messages: Message[], anchorId: string | null, message: Message): Message[] {
+  if (!anchorId) return [...messages, message];
+  const anchorIndex = messages.findIndex((item) => item.id === anchorId);
+  if (anchorIndex < 0) return [...messages, message];
+  return [
+    ...messages.slice(0, anchorIndex + 1),
+    message,
+    ...messages.slice(anchorIndex + 1),
+  ];
+}
+
+function isAlertReminderIntent(text: string) {
+  return /\b(alert|alarm|reminder|remainder|notify|notification|pop\s*up|popup|remind me)\b/i.test(text);
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}`));
+    reader.readAsText(file);
+  });
+}
+
+function formatChatError(error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : String(error || '');
+  const lower = rawMessage.toLowerCase();
+
+  if (lower.includes('402') || lower.includes('credit')) {
+    return 'The AI provider rejected this request because the account token/credit budget is too low. I reduced the output token limit for new requests, so try sending it again.';
+  }
+
+  if (lower.includes('413') || lower.includes('too large') || lower.includes('payload')) {
+    return 'That screenshot is too large to send as-is. Crop it to the important area or paste a smaller image, then I can analyze it.';
+  }
+
+  if (lower.includes('image') || lower.includes('vision') || lower.includes('unsupported')) {
+    return 'I could not analyze that image with the current vision model response. Try pasting the screenshot again, or attach a smaller PNG/JPG.';
+  }
+
+  if (lower.includes('failed to fetch') || lower.includes('networkerror') || lower.includes('network')) {
+    return 'I could not reach the local chat service. Please make sure the FastAPI backend is running on port 8000.';
+  }
+
+  return rawMessage
+    ? `I could not finish that request: ${rawMessage.slice(0, 260)}`
+    : 'I could not finish that request. Please try once more.';
+}
+
+async function buildChatAttachments(files?: File[]): Promise<ChatAttachmentPayload[] | undefined> {
+  if (!files?.length) return undefined;
+  const supported = files.slice(0, 5);
+  const payloads = await Promise.all(
+    supported.map(async (file) => {
+      const base = {
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+      };
+
+      if (file.type.startsWith('image/')) {
+        return {
+          ...base,
+          data_url: await readFileAsDataUrl(file),
+        };
+      }
+
+      if (
+        file.type.startsWith('text/') ||
+        /\.(md|txt|json|csv|ts|tsx|js|jsx|py)$/i.test(file.name)
+      ) {
+        const text = await readFileAsText(file);
+        return {
+          ...base,
+          text: text.slice(0, 16000),
+        };
+      }
+
+      return base;
+    })
+  );
+  return payloads;
 }
 
 export default function ChatThread({
@@ -123,8 +276,10 @@ export default function ChatThread({
   const [selectedModel, setSelectedModel] = useState('Akansha');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
+  const [streamingAfterMessageId, setStreamingAfterMessageId] = useState<string | null>(null);
   const [promptModalOpen, setPromptModalOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [activeBranchFromId, setActiveBranchFromId] = useState<number | null>(null);
 
   useEffect(() => {
     setMessages([]);
@@ -139,6 +294,9 @@ export default function ChatThread({
               role: m.role,
               content: m.content,
               timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+              pinned: Boolean(m.pinned),
+              displayOrder: typeof m.display_order === 'number' ? m.display_order : null,
+              branchFromId: typeof m.branch_from_id === 'number' ? m.branch_from_id : null,
             }))
           );
         }
@@ -149,6 +307,7 @@ export default function ChatThread({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [automationPermissionCount, setAutomationPermissionCount] = useState<number | null>(null);
   const [avatarMinimized, setAvatarMinimized] = useState(false);
   const [showAvatarBar, setShowAvatarBar] = useState(true);
   const activeSessionIdRef = useRef(sessionId);
@@ -156,6 +315,16 @@ export default function ChatThread({
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const micStoppedManuallyRef = useRef(false);
+  const voiceEnabledRef = useRef(false);
+  const isListeningRef = useRef(false);
+  const isSpeakingRef = useRef(false);
+  const isStreamingRef = useRef(false);
+  const recognitionStartingRef = useRef(false);
+  const voiceRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceAutoStartAttemptedRef = useRef(false);
+  const voiceListeningToastShownRef = useRef(false);
+  const activeChatAbortRef = useRef<AbortController | null>(null);
+  const sendFromVoiceRef = useRef<(content: string) => void>(() => undefined);
   const pendingTranscriptRef = useRef('');
   const pendingPlannerRef = useRef<PlannerCommand | null>(null);
 
@@ -164,13 +333,57 @@ export default function ChatThread({
   }, [sessionId]);
 
   useEffect(() => {
-    const totalTokens = Math.floor(messages.reduce((acc, msg) => acc + msg.content.length, 0) / 4);
-    onStatsChange?.(messages.length, totalTokens);
-  }, [messages, onStatsChange]);
+    voiceEnabledRef.current = voiceEnabled;
+    if (!voiceEnabled && voiceRestartTimerRef.current) {
+      clearTimeout(voiceRestartTimerRef.current);
+      voiceRestartTimerRef.current = null;
+    }
+  }, [voiceEnabled]);
 
   useEffect(() => {
+    isListeningRef.current = isListening;
+  }, [isListening]);
+
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+  }, [isSpeaking]);
+
+  useEffect(() => {
+    isStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
+  useEffect(() => {
+    const totalCharacters =
+      messages.reduce((acc, msg) => acc + msg.content.length, 0) + streamingContent.length;
+    const totalTokens = Math.floor(totalCharacters / 4);
+    onStatsChange?.(messages.length + (streamingContent ? 1 : 0), totalTokens);
+  }, [messages, onStatsChange, streamingContent]);
+
+  useEffect(() => {
+    if (streamingAfterMessageId) {
+      document
+        .getElementById(`chat-message-${streamingAfterMessageId}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    if (activeBranchFromId) {
+      document
+        .getElementById(`chat-message-${activeBranchFromId}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent]);
+  }, [activeBranchFromId, messages, streamingAfterMessageId, streamingContent]);
+
+  useEffect(() => {
+    fetch('http://localhost:8000/api/automation/browser/status')
+      .then((res) => res.json())
+      .then((status) => {
+        const permissions = status?.permissions ?? {};
+        setAutomationPermissionCount(Object.values(permissions).filter(Boolean).length);
+      })
+      .catch(() => setAutomationPermissionCount(null));
+  }, []);
 
   // Text-to-speech
   const speak = useCallback(
@@ -182,16 +395,33 @@ export default function ChatThread({
         .replace(/\*\*/g, '')
         .replace(/`/g, '');
       const utterance = new SpeechSynthesisUtterance(plainText.slice(0, 500));
+      const speechLang = detectSpeechLang(plainText);
+      utterance.lang = speechLang;
       utterance.rate = 1.0;
       utterance.pitch = 1.1;
       utterance.volume = 0.9;
       const voices = window.speechSynthesis.getVoices();
       const femaleVoice = voices.find(
         (v) =>
+          v.lang.toLowerCase().startsWith(speechLang.slice(0, 2).toLowerCase()) &&
+          (v.name.toLowerCase().includes('female') ||
+            v.name.includes('Samantha') ||
+            v.name.includes('Victoria') ||
+            v.name.includes('Karen') ||
+            v.name.includes('Heera') ||
+            v.name.includes('Swara') ||
+            v.name.includes('Shruti') ||
+            v.name.includes('Neerja'))
+      ) ?? voices.find(
+        (v) =>
           v.name.toLowerCase().includes('female') ||
           v.name.includes('Samantha') ||
           v.name.includes('Victoria') ||
-          v.name.includes('Karen')
+          v.name.includes('Karen') ||
+          v.name.includes('Heera') ||
+          v.name.includes('Swara') ||
+          v.name.includes('Shruti') ||
+          v.name.includes('Neerja')
       );
       if (femaleVoice) utterance.voice = femaleVoice;
       utterance.onstart = () => {
@@ -199,6 +429,10 @@ export default function ChatThread({
         setCurrentEmotion('speaking');
       };
       utterance.onend = () => {
+        setIsSpeaking(false);
+        setCurrentEmotion('neutral');
+      };
+      utterance.onerror = () => {
         setIsSpeaking(false);
         setCurrentEmotion('neutral');
       };
@@ -218,10 +452,18 @@ export default function ChatThread({
       return;
     }
 
-    if (isListening) {
+    if (isListeningRef.current || recognitionStartingRef.current) {
       micStoppedManuallyRef.current = true;
+      recognitionStartingRef.current = false;
+      if (voiceRestartTimerRef.current) {
+        clearTimeout(voiceRestartTimerRef.current);
+        voiceRestartTimerRef.current = null;
+      }
       recognitionRef.current?.stop();
       setIsListening(false);
+      voiceEnabledRef.current = false;
+      setVoiceEnabled(false);
+      voiceListeningToastShownRef.current = false;
       return;
     }
 
@@ -231,63 +473,117 @@ export default function ChatThread({
         stream.getTracks().forEach((track) => track.stop());
       } catch (error) {
         console.error('Microphone permission denied:', error);
+        micStoppedManuallyRef.current = true;
+        recognitionStartingRef.current = false;
+        setVoiceEnabled(false);
         toast.error('Microphone permission is blocked. Allow mic access in your browser.');
         return;
       }
 
       const recognition = new SpeechRecognition();
-      recognition.continuous = false;
+      recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = 'en-US';
+      recognition.maxAlternatives = 3;
+      const preference = chatLanguagePreference();
+      recognition.lang =
+        preference === 'hindi' ? 'hi-IN' : preference === 'telugu_english' ? 'te-IN' : 'en-IN';
 
       pendingTranscriptRef.current = '';
       micStoppedManuallyRef.current = false;
+      voiceEnabledRef.current = true;
+      setVoiceEnabled(true);
 
       recognition.onstart = () => {
+        recognitionStartingRef.current = false;
         setIsListening(true);
-        toast.info('Listening... speak now');
+        if (!voiceListeningToastShownRef.current) {
+          voiceListeningToastShownRef.current = true;
+          toast.info('Listening... speak now');
+        }
       };
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
+        let interimTranscript = '';
         let finalTranscript = '';
 
         for (let i = event.resultIndex; i < event.results.length; i += 1) {
-          const chunk = event.results[i][0].transcript.trim();
+          const alternatives = Array.from(event.results[i]).map((alternative) =>
+            alternative.transcript.trim()
+          );
+          const chunk = alternatives
+            .filter(Boolean)
+            .sort((left, right) => right.length - left.length)[0];
           if (event.results[i].isFinal) {
             finalTranscript += `${chunk} `;
+          } else {
+            interimTranscript += `${chunk} `;
+          }
+        }
+
+        const heardText = `${finalTranscript} ${interimTranscript}`.trim();
+        if (heardText && (isSpeakingRef.current || isStreamingRef.current)) {
+          window.speechSynthesis?.cancel();
+          activeChatAbortRef.current?.abort();
+          activeChatAbortRef.current = null;
+          setIsSpeaking(false);
+          setIsStreaming(false);
+          setStreamingContent('');
+          setCurrentEmotion('thinking');
+          if (CHAT_INTERRUPT_PATTERN.test(heardText) && !finalTranscript.trim()) {
+            pendingTranscriptRef.current = '';
+            return;
           }
         }
 
         if (finalTranscript.trim()) {
-          pendingTranscriptRef.current =
-            `${pendingTranscriptRef.current} ${finalTranscript}`.trim();
+          const spokenText = finalTranscript.trim();
+          pendingTranscriptRef.current = '';
+          sendFromVoiceRef.current(spokenText);
         }
       };
 
       recognition.onerror = (event: any) => {
+        recognitionStartingRef.current = false;
         setIsListening(false);
         const errorCode = event?.error;
 
         if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+          micStoppedManuallyRef.current = true;
+          voiceListeningToastShownRef.current = false;
           toast.error('Browser blocked voice input. Allow microphone and speech access.');
           return;
         }
 
-        if (errorCode === 'no-speech') {
-          toast.error('No speech detected. Try again and speak a little closer to the mic.');
+        if (TRANSIENT_SPEECH_ERRORS.has(errorCode)) {
+          if (!micStoppedManuallyRef.current && voiceEnabledRef.current && !voiceRestartTimerRef.current) {
+            voiceRestartTimerRef.current = setTimeout(() => {
+              voiceRestartTimerRef.current = null;
+              if (isListeningRef.current || recognitionStartingRef.current || !voiceEnabledRef.current) return;
+              recognitionRef.current = null;
+              toggleListening();
+            }, 500);
+          }
           return;
         }
 
-        toast.error('Voice input failed. Try Chrome or Brave with mic permission enabled.');
+        toast.error(`Voice input paused (${errorCode || 'unknown error'}). I will keep trying while voice mode is on.`);
       };
 
       recognition.onend = () => {
+        recognitionStartingRef.current = false;
         setIsListening(false);
         const spokenText = pendingTranscriptRef.current.trim();
         if (!micStoppedManuallyRef.current && spokenText) {
-          handleSend(spokenText);
-        } else if (!micStoppedManuallyRef.current && !spokenText) {
-          toast.error('I did not catch anything from the microphone.');
+          sendFromVoiceRef.current(spokenText);
+        }
+
+        if (!micStoppedManuallyRef.current && voiceEnabledRef.current) {
+          voiceRestartTimerRef.current = setTimeout(() => {
+            voiceRestartTimerRef.current = null;
+            if (isListeningRef.current || recognitionStartingRef.current) return;
+            recognitionRef.current = null;
+            toggleListening();
+          }, 350);
         }
         pendingTranscriptRef.current = '';
       };
@@ -295,9 +591,20 @@ export default function ChatThread({
       recognitionRef.current = recognition;
 
       try {
+        recognitionStartingRef.current = true;
         recognition.start();
       } catch (error) {
+        recognitionStartingRef.current = false;
         console.error('Speech recognition start failed:', error);
+        if (!micStoppedManuallyRef.current && voiceEnabledRef.current) {
+          voiceRestartTimerRef.current = setTimeout(() => {
+            voiceRestartTimerRef.current = null;
+            if (isListeningRef.current || recognitionStartingRef.current || !voiceEnabledRef.current) return;
+            recognitionRef.current = null;
+            toggleListening();
+          }, 600);
+          return;
+        }
         toast.error('Could not start voice input. Refresh once and try again.');
       }
     };
@@ -306,7 +613,7 @@ export default function ChatThread({
   }, [isListening]);
 
   const simulateStreaming = useCallback(
-    (content: string, emotion: Emotion = 'neutral') => {
+    (content: string, emotion: Emotion = 'neutral', shouldSpeak = false) => {
       setIsStreaming(true);
       setStreamingContent('');
       setCurrentEmotion('thinking');
@@ -332,7 +639,9 @@ export default function ChatThread({
           setIsStreaming(false);
           setStreamingContent('');
           setCurrentEmotion(emotion);
-          speak(content);
+          if (shouldSpeak) {
+            speak(content);
+          }
         }
       }, 35);
     },
@@ -369,11 +678,22 @@ export default function ChatThread({
   );
 
   const handleSend = useCallback(
-    (content: string, attachments?: File[]) => {
-      if (!content.trim()) return;
+    (content: string, attachments?: File[], source: 'text' | 'voice' = 'text') => {
+      if (!content.trim() && !attachments?.length) return;
+      const hasAttachments = Boolean(attachments?.length);
+      const continueFromId = activeBranchFromId;
+      const continueFromLocalId = continueFromId ? String(continueFromId) : null;
+      const shouldSpeakReply = source === 'voice';
+      activeChatAbortRef.current?.abort();
+      activeChatAbortRef.current = null;
+      window.speechSynthesis?.cancel();
+      setIsSpeaking(false);
+      setStreamingContent('');
+      setIsStreaming(false);
       const detectedEmotion = detectEmotion(content);
+      const localUserMessageId = `msg-${Date.now()}`;
       const userMsg: Message = {
-        id: `msg-${Date.now()}`,
+        id: localUserMessageId,
         role: 'user',
         content,
         timestamp: new Date(),
@@ -382,9 +702,12 @@ export default function ChatThread({
           name: f.name,
           type: f.type,
           size: `${(f.size / 1024).toFixed(1)} KB`,
+          previewUrl: f.type.startsWith('image/') ? URL.createObjectURL(f) : undefined,
         })),
+        branchFromId: continueFromId,
       };
-      setMessages((prev) => [...prev, userMsg]);
+      setMessages((prev) => insertMessageAfter(prev, continueFromLocalId, userMsg));
+      setStreamingAfterMessageId(localUserMessageId);
       setCurrentEmotion('thinking');
 
       const persistPlannerSideMessage = (role: 'user' | 'assistant', messageContent: string) => {
@@ -433,7 +756,7 @@ export default function ChatThread({
       };
 
       const pendingPlanner = pendingPlannerRef.current;
-      if (pendingPlanner) {
+      if (!hasAttachments && pendingPlanner) {
         if (isPlannerPreparationPrompt(content)) {
           addAssistantMessage(
             pendingPlanner.kind === 'calendar'
@@ -491,7 +814,7 @@ export default function ChatThread({
         return;
       }
 
-      if (isReminderOnlyPlannerFollowUp(content)) {
+      if (!hasAttachments && isReminderOnlyPlannerFollowUp(content)) {
         persistPlannerSideMessage('user', content);
         const plannerResult = applyPlannerReminderFollowUp(content);
         addAssistantMessage(plannerResult.message, plannerResult.success ? 'happy' : 'thinking');
@@ -499,7 +822,7 @@ export default function ChatThread({
         return;
       }
 
-      if (isAutomationIntent(content)) {
+      if (!hasAttachments && !isAlertReminderIntent(content) && isAutomationIntent(content)) {
         fetch('http://localhost:8000/api/automation/browser/prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -530,7 +853,7 @@ export default function ChatThread({
         return;
       }
 
-      const plannerIntent = inferPlannerCommand(content);
+      const plannerIntent = hasAttachments ? null : inferPlannerCommand(content);
       if (plannerIntent) {
         persistPlannerSideMessage('user', content);
         if (isPlannerPreparationPrompt(content)) {
@@ -587,28 +910,164 @@ export default function ChatThread({
         return;
       }
 
-      fetch('http://localhost:8000/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, session_id: activeSessionIdRef.current }),
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          window.dispatchEvent(new CustomEvent('akansha-history-updated'));
-          const responseText = data.response;
+      const streamResponse = async () => {
+        const controller = new AbortController();
+        activeChatAbortRef.current = controller;
+        setIsStreaming(true);
+        setStreamingContent('');
+        setCurrentEmotion('thinking');
+        let accumulated = '';
+        let serverUserMessageId: string | null = null;
+        let serverAssistantMessageId: string | null = null;
+
+        try {
+          const attachmentPayloads = await buildChatAttachments(attachments);
+          const response = await fetch('http://localhost:8000/api/chat/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              message: content,
+              session_id: activeSessionIdRef.current,
+              conversation_mode: shouldSpeakReply ? 'voice' : 'text',
+              language_preference: chatLanguagePreference(),
+              attachments: attachmentPayloads,
+              continue_from_message_id: continueFromId,
+            }),
+          });
+
+          if (!response.body) {
+            throw new Error('Streaming response was not available');
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split('\n\n');
+            buffer = events.pop() ?? '';
+
+            for (const event of events) {
+              const payloadLine = event.split('\n').find((line) => line.startsWith('data: '));
+              if (!payloadLine) continue;
+
+              const payload = JSON.parse(payloadLine.slice(6));
+              if (payload.type === 'chunk') {
+                accumulated += payload.content;
+                setStreamingContent(accumulated);
+              }
+              if (payload.type === 'done') {
+                accumulated = payload.content;
+                setStreamingContent(accumulated);
+                if (payload.user_message_id) {
+                  serverUserMessageId = String(payload.user_message_id);
+                }
+                if (payload.assistant_message_id) {
+                  serverAssistantMessageId = String(payload.assistant_message_id);
+                }
+              }
+              if (payload.type === 'error') {
+                throw new Error(payload.message);
+              }
+            }
+          }
+
+          if (controller.signal.aborted) return;
           const responseEmotion: Emotion = detectedEmotion === 'sad' ? 'sad' : 'happy';
-          simulateStreaming(responseText, responseEmotion);
-        })
-        .catch((err) => {
+          const newMsg: Message = {
+            id: serverAssistantMessageId || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            role: 'assistant',
+            content: accumulated,
+            model: selectedModel,
+            timestamp: new Date(),
+            tokenCount: Math.floor(accumulated.length / 4),
+            emotion: responseEmotion,
+            branchFromId: continueFromId,
+          };
+          setMessages((prev) => {
+            const savedUserMessageId = serverUserMessageId;
+            const next = savedUserMessageId
+              ? prev.map((message) =>
+                  message.id === localUserMessageId ? { ...message, id: savedUserMessageId } : message
+                )
+              : prev;
+            return insertMessageAfter(next, savedUserMessageId || localUserMessageId, newMsg);
+          });
+          setStreamingAfterMessageId(null);
+          const assistantNumericId = serverAssistantMessageId ? Number(serverAssistantMessageId) : null;
+          if (continueFromId && assistantNumericId) {
+            setActiveBranchFromId(assistantNumericId);
+          }
+          setCurrentEmotion(responseEmotion);
+          window.dispatchEvent(new CustomEvent('akansha-history-updated'));
+          if (shouldSpeakReply) {
+            speak(accumulated);
+          }
+        } catch (err) {
+          if (controller.signal.aborted) return;
           console.error(err);
-          simulateStreaming(
-            "I'm sorry, I couldn't connect to my brain. Please make sure the FastAPI backend is running on port 8000.",
-            'sad'
-          );
-        });
+          simulateStreaming(formatChatError(err), 'sad', shouldSpeakReply);
+        } finally {
+          if (activeChatAbortRef.current === controller) {
+            activeChatAbortRef.current = null;
+          }
+          if (!controller.signal.aborted) {
+            setIsStreaming(false);
+            setStreamingContent('');
+            setStreamingAfterMessageId(null);
+          }
+        }
+      };
+
+      void streamResponse();
     },
-    [addAssistantMessage, messages, simulateStreaming]
+    [activeBranchFromId, addAssistantMessage, messages, selectedModel, simulateStreaming, speak]
   );
+
+  const stopActiveResponse = useCallback(() => {
+    activeChatAbortRef.current?.abort();
+    activeChatAbortRef.current = null;
+    window.speechSynthesis?.cancel();
+    setIsSpeaking(false);
+    setIsStreaming(false);
+    setStreamingContent('');
+    setStreamingAfterMessageId(null);
+    setCurrentEmotion('neutral');
+    toast.info('Stopped. You can type or attach a screenshot now.');
+  }, []);
+
+  useEffect(() => {
+    sendFromVoiceRef.current = (content: string) => handleSend(content, undefined, 'voice');
+  }, [handleSend]);
+
+  useEffect(() => {
+    if (!voiceEnabled) return;
+
+    const keepAlive = setInterval(() => {
+      if (
+        voiceEnabledRef.current &&
+        !micStoppedManuallyRef.current &&
+        !isListeningRef.current &&
+        !recognitionStartingRef.current
+      ) {
+        toggleListening();
+      }
+    }, 1600);
+
+    return () => clearInterval(keepAlive);
+  }, [toggleListening, voiceEnabled]);
+
+  useEffect(() => {
+    return () => {
+      activeChatAbortRef.current?.abort();
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
 
   const handleShare = () => {
     navigator.clipboard.writeText('https://akansha.ai/share/conv-abc123');
@@ -642,7 +1101,60 @@ export default function ChatThread({
     }
   };
 
+  const toggleMessagePin = useCallback((message: Message) => {
+    const numericId = getMessageNumericId(message);
+    if (!numericId) {
+      toast.info('This message can be pinned after it finishes saving.');
+      return;
+    }
+
+    const nextPinned = !message.pinned;
+    setMessages((previous) =>
+      previous.map((item) => (item.id === message.id ? { ...item, pinned: nextPinned } : item))
+    );
+
+    fetch(`http://localhost:8000/api/chat/message/${numericId}/pin`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned: nextPinned }),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error('Could not update the pin.');
+        toast.success(nextPinned ? 'Message pinned' : 'Message unpinned');
+      })
+      .catch((error) => {
+        console.error('Failed to pin message:', error);
+        setMessages((previous) =>
+          previous.map((item) => (item.id === message.id ? { ...item, pinned: message.pinned } : item))
+        );
+        toast.error(error instanceof Error ? error.message : 'Could not update the pin.');
+      });
+  }, []);
+
+  const continueFromMessage = useCallback((message: Message) => {
+    const numericId = getMessageNumericId(message);
+    if (!numericId) {
+      toast.info('Wait for this message to finish saving, then continue from it.');
+      return;
+    }
+
+    setActiveBranchFromId(numericId);
+    setTimeout(() => {
+      document.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Message Akansha"]')?.focus();
+    }, 0);
+    toast.success('Continue mode is active. Your next message will be inserted here.');
+  }, []);
+
+  const clearContinueMode = useCallback(() => {
+    setActiveBranchFromId(null);
+    toast.info('Continue mode cleared. New replies will go to the bottom.');
+  }, []);
+
   const totalTokens = Math.floor(messages.reduce((acc, msg) => acc + msg.content.length, 0) / 4);
+  const pinnedMessages = messages.filter((message) => message.pinned);
+  const activeBranchMessage = activeBranchFromId
+    ? messages.find((message) => getMessageNumericId(message) === activeBranchFromId)
+    : null;
 
   return (
     <div className="flex flex-col h-full">
@@ -656,6 +1168,13 @@ export default function ChatThread({
             <span className="text-xs text-[#00C9A7] flex items-center gap-1">
               <Brain size={10} />
               Memory active
+            </span>
+            <span className="text-muted-foreground/40">·</span>
+            <span className="text-xs text-[#38bdf8] flex items-center gap-1">
+              <CheckCheck size={10} />
+              {automationPermissionCount === null
+                ? 'Automation permissions checking'
+                : `${automationPermissionCount} automation permissions active`}
             </span>
             <span className="text-muted-foreground/40">·</span>
             <span className="text-xs text-muted-foreground font-mono tabular-nums">
@@ -724,6 +1243,29 @@ export default function ChatThread({
         </div>
       </div>
 
+      {pinnedMessages.length > 0 && (
+        <div className="px-4 py-2 border-b border-border bg-amber-400/[0.03] shrink-0">
+          <div className="flex items-center gap-2 overflow-x-auto scrollbar-thin">
+            <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-400 shrink-0">
+              <Pin size={12} fill="currentColor" />
+              Pinned
+            </span>
+            {pinnedMessages.slice(0, 6).map((message) => (
+              <button
+                key={`pinned-${message.id}`}
+                type="button"
+                onClick={() => document.getElementById(`chat-message-${message.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                className="max-w-72 truncate rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1.5 text-xs text-foreground hover:bg-amber-400/15 transition-colors"
+                title={message.content}
+              >
+                {message.role === 'user' ? 'You: ' : 'Akansha: '}
+                {message.content || 'Attachment message'}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Avatar bar (minimized or full) */}
       {showAvatarBar && (
         <div className="px-4 py-2 border-b border-border bg-card/30 flex items-center gap-3 shrink-0">
@@ -733,7 +1275,14 @@ export default function ChatThread({
               isSpeaking={isSpeaking}
               isListening={isListening}
               onToggleMic={toggleListening}
-              onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
+              onToggleVoice={() => {
+                const next = !voiceEnabled;
+                if (next) {
+                  micStoppedManuallyRef.current = false;
+                  voiceAutoStartAttemptedRef.current = false;
+                }
+                setVoiceEnabled(next);
+              }}
               voiceEnabled={voiceEnabled}
               minimized={true}
               onToggleMinimize={() => setAvatarMinimized(false)}
@@ -815,10 +1364,31 @@ export default function ChatThread({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4 space-y-1">
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <React.Fragment key={msg.id}>
+            <MessageBubble
+              message={msg}
+              onTogglePin={toggleMessagePin}
+              onContinueFrom={continueFromMessage}
+              isBranchAnchor={activeBranchFromId === getMessageNumericId(msg)}
+            />
+            {isStreaming && streamingAfterMessageId === msg.id && (
+              <div className="message-enter">
+                <MessageBubble
+                  message={{
+                    id: 'streaming',
+                    role: 'assistant',
+                    content: streamingContent,
+                    model: selectedModel,
+                    timestamp: new Date(),
+                    isStreaming: true,
+                  }}
+                />
+              </div>
+            )}
+          </React.Fragment>
         ))}
 
-        {isStreaming && (
+        {isStreaming && !streamingAfterMessageId && (
           <div className="message-enter">
             <MessageBubble
               message={{
@@ -854,9 +1424,29 @@ export default function ChatThread({
         ))}
       </div>
 
+      {activeBranchMessage && (
+        <div className="mx-4 mb-2 rounded-2xl border border-[#6C47FF]/25 bg-[#6C47FF]/10 px-3 py-2 text-xs text-foreground flex items-center gap-3 shrink-0">
+          <GitBranch size={14} className="text-[#9B7FFF] shrink-0" />
+          <span className="min-w-0 flex-1 truncate">
+            Continuing from {activeBranchMessage.role === 'user' ? 'your' : 'Akansha'} message:
+            {' '}
+            <span className="text-muted-foreground">{activeBranchMessage.content || 'attachment message'}</span>
+          </span>
+          <button
+            type="button"
+            onClick={clearContinueMode}
+            className="p-1 rounded-lg hover:bg-background/50 text-muted-foreground hover:text-foreground transition-colors"
+            title="Clear continue mode"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
       {/* Composer */}
       <ChatComposer
         onSend={handleSend}
+        onStop={stopActiveResponse}
         onOpenPromptLibrary={() => setPromptModalOpen(true)}
         isStreaming={isStreaming}
         selectedModel={selectedModel}

@@ -30,34 +30,10 @@ interface ConversationPreviewProps {
   conversation: Conversation;
   onClose: () => void;
   onDeleteConversation?: (id: string) => Promise<void> | void;
+  onArchiveConversation?: (id: string) => void;
+  onToggleStar?: (id: string) => void;
+  onExportConversation?: (id: string) => void;
 }
-
-const PREVIEW_MESSAGES = [
-  {
-    id: 'prev-msg-001',
-    role: 'user',
-    content:
-      'Can you help me refactor this Express.js auth middleware to use async/await properly and add proper error handling?',
-  },
-  {
-    id: 'prev-msg-002',
-    role: 'assistant',
-    content:
-      "Absolutely! Here's a refactored version with proper async/await and comprehensive JWT error handling. I've added granular error types for expired vs. invalid tokens, guard clause patterns for early returns, and explicit void return types to prevent accidental response-after-send bugs.",
-  },
-  {
-    id: 'prev-msg-003',
-    role: 'user',
-    content:
-      'This is great! Can you also add rate limiting to this middleware? I want to limit to 100 requests per 15 minutes per IP.',
-  },
-  {
-    id: 'prev-msg-004',
-    role: 'assistant',
-    content:
-      "Here\'s how to add rate limiting using express-rate-limit with Redis store for distributed deployments. I\'ve included production considerations like using X-Forwarded-For for proxy environments and separate stricter limits for auth endpoints.",
-  },
-];
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('en-US', {
@@ -73,10 +49,13 @@ export default function ConversationPreview({
   conversation,
   onClose,
   onDeleteConversation,
+  onArchiveConversation,
+  onToggleStar,
+  onExportConversation,
 }: ConversationPreviewProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'messages' | 'memory'>('overview');
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const previewMessages = conversation.messages.slice(-8);
 
   const handleCopyLink = () => {
     // Backend integration point: generate shareable link
@@ -94,7 +73,7 @@ export default function ConversationPreview({
   };
 
   const handleArchive = () => {
-    toast.success(`"${conversation.title}" archived`);
+    onArchiveConversation?.(conversation.id);
   };
 
   const modelColorMap: Record<string, string> = {
@@ -129,9 +108,7 @@ export default function ConversationPreview({
 
         <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={() => {
-              toast.success(conversation.starred ? 'Removed from starred' : 'Added to starred');
-            }}
+            onClick={() => onToggleStar?.(conversation.id)}
             className={`p-2 rounded-lg transition-colors ${conversation.starred ? 'text-amber-400 hover:bg-amber-400/10' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
             title="Star conversation"
           >
@@ -177,7 +154,7 @@ export default function ConversationPreview({
                       key: 'action-export',
                       icon: Download,
                       label: 'Export as JSON',
-                      action: () => toast.success('Export started'),
+                      action: () => onExportConversation?.(conversation.id),
                     },
                     {
                       key: 'action-delete',
@@ -244,7 +221,7 @@ export default function ConversationPreview({
             </div>
 
             <div className="space-y-3">
-              {PREVIEW_MESSAGES.map((msg) => (
+              {previewMessages.length ? previewMessages.map((msg) => (
                 <div
                   key={msg.id}
                   className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
@@ -268,7 +245,11 @@ export default function ConversationPreview({
                     {msg.content}
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="rounded-2xl border border-border bg-muted/30 px-4 py-6 text-center text-xs text-muted-foreground">
+                  No saved messages are available for this conversation yet.
+                </div>
+              )}
             </div>
 
             <div className="pt-4">

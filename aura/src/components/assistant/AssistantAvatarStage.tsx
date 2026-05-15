@@ -1,9 +1,12 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { Suspense, useMemo, useRef } from 'react';
+import { Canvas, useFrame, useLoader } from '@react-three/fiber';
+import * as THREE from 'three';
 
 type AssistantEmotion = 'happy' | 'neutral' | 'thinking' | 'sad' | 'surprised';
 type VoiceGender = 'male' | 'female';
+type VoiceTone = 'friendly' | 'professional' | 'energetic' | 'calm';
 
 interface AssistantAvatarStageProps {
   isListening: boolean;
@@ -13,407 +16,236 @@ interface AssistantAvatarStageProps {
   emotion: AssistantEmotion;
   listenerEmotion: AssistantEmotion;
   voiceGender: VoiceGender;
+  voiceTone: VoiceTone;
 }
 
-const FEMALE_VIDEO_SRC = '/video/realistic-girl-avatar.mp4';
-const ENHANCED_FEMALE_VIDEO_SRC = '/video/realistic-facial-animation.mp4';
+const HUMAN_AVATAR_PATH = '/assets/images/akansha-human-avatar.png';
 
-const VIDEO_SEGMENTS = {
-  idle: { start: 6.9, end: 7.85 },
-  listening: { start: 5.85, end: 6.65 },
-  speaking: {
-    start: 0,
-    end: 6.75,
-    anchors: [0, 0.25, 0.5, 0.875, 1.25, 1.75, 2.125, 2.625, 3, 3.375, 4, 4.5, 5, 5.625, 6.25, 6.625],
-  },
-} as const;
-
-const VISEME_ANCHORS: Record<number, number[]> = {
-  0: [6.875, 7, 7.125, 7.875],
-  1: [0, 2.625, 2.75, 4, 4.125],
-  2: [0.25, 0.375, 0.5, 0.625, 3.75, 5.875, 6.75],
-  3: [0.875, 1, 2, 2.125, 3.125, 3.5, 5.5, 5.625, 6.25],
-  4: [1.125, 1.5, 3, 3.625, 4.75, 5, 5.125, 7.25],
-  5: [1.25, 3.25, 5.25],
-  6: [0.75, 1.75, 2.25, 3.875, 4.625, 5.75, 6],
-  7: [2.5, 2.875, 4.5, 6.375],
-  8: [1.375, 1.625, 5.375, 6.125, 6.5],
+const EMOTION_THEME: Record<AssistantEmotion, { glow: string; key: string; rim: string }> = {
+  happy: { glow: 'rgba(244,114,182,0.2)', key: '#f9a8d4', rim: '#34d399' },
+  neutral: { glow: 'rgba(148,163,184,0.12)', key: '#f8fafc', rim: '#67e8f9' },
+  thinking: { glow: 'rgba(245,158,11,0.14)', key: '#fde68a', rim: '#fbbf24' },
+  sad: { glow: 'rgba(96,165,250,0.13)', key: '#bfdbfe', rim: '#60a5fa' },
+  surprised: { glow: 'rgba(251,113,133,0.17)', key: '#fecdd3', rim: '#fb7185' },
 };
 
-function getEmotionAwareAnchors(visemeKey: number, emotion: AssistantEmotion) {
-  const anchors = VISEME_ANCHORS[visemeKey] ?? VIDEO_SEGMENTS.speaking.anchors;
+const TONE_ENERGY: Record<VoiceTone, number> = {
+  friendly: 0.24,
+  professional: 0.1,
+  energetic: 0.38,
+  calm: 0.06,
+};
 
-  if (emotion === 'happy') {
-    if (visemeKey === 1) return [0, 2.625, 4, 4.125];
-    if (visemeKey === 2 || visemeKey === 8) return [0.25, 0.5, 3.75, 5.875, 6.75];
-    if (visemeKey === 0) return [6.75, 6.875, 7];
-  }
+function HologramParticles({ color }: { color: string }) {
+  const pointsRef = useRef<THREE.Points>(null);
+  const geometry = useMemo(() => {
+    const positions: number[] = [];
+    for (let index = 0; index < 260; index += 1) {
+      const radius = 0.95 + Math.random() * 1.25;
+      const angle = Math.random() * Math.PI * 2;
+      const height = -1.65 + Math.random() * 3.4;
+      positions.push(Math.cos(angle) * radius, height, Math.sin(angle) * radius * 0.32);
+    }
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    return particleGeometry;
+  }, []);
 
-  if (emotion === 'surprised') {
-    if (visemeKey === 1 || visemeKey === 7) return [0, 2.625, 2.75, 4, 4.5];
-    if (visemeKey === 3) return [0.875, 2, 2.125, 3.125];
-  }
+  useFrame(({ clock }) => {
+    if (!pointsRef.current) return;
+    pointsRef.current.rotation.y = clock.getElapsedTime() * 0.08;
+    pointsRef.current.position.y = Math.sin(clock.getElapsedTime() * 0.6) * 0.018;
+  });
 
-  if (emotion === 'sad' || emotion === 'thinking') {
-    if (visemeKey === 1) return [2.625, 4, 4.125];
-    if (visemeKey === 2) return [5.875, 6.75];
-    if (visemeKey === 0 || visemeKey === 8) return [6.125, 6.5, 7, 7.125];
-  }
-
-  return anchors;
+  return (
+      <points ref={pointsRef} geometry={geometry}>
+      <pointsMaterial color={color} size={0.017} transparent opacity={0.68} depthWrite={false} blending={THREE.AdditiveBlending} />
+    </points>
+  );
 }
 
-const STAGE_VARIANTS: Record<
-  VoiceGender,
-  {
-    accent: string;
-    glow: string;
-    mediaType: 'video' | 'image';
-    mediaSrc: string;
-  }
-> = {
-  female: {
-    accent: '#f472b6',
-    glow: 'rgba(244,114,182,0.24)',
-    mediaType: 'video',
-    mediaSrc: ENHANCED_FEMALE_VIDEO_SRC,
-  },
-  male: {
-    accent: '#38bdf8',
-    glow: 'rgba(56,189,248,0.22)',
-    mediaType: 'image',
-    mediaSrc:
-      'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=1200&q=80',
-  },
-};
+function HologramScanField({ color }: { color: string }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const rings = useMemo(() => Array.from({ length: 20 }, (_, index) => -1.62 + index * 0.17), []);
 
-const EMOTION_COPY: Record<AssistantEmotion, string> = {
-  happy: 'Warm and engaged',
-  neutral: 'Balanced and steady',
-  thinking: 'Reflective and attentive',
-  sad: 'Gentle and supportive',
-  surprised: 'Bright and alert',
-};
+  useFrame(({ clock }) => {
+    if (!groupRef.current) return;
+    const time = clock.getElapsedTime();
+    groupRef.current.children.forEach((child, index) => {
+      child.position.y = -1.62 + ((rings[index] + 1.62 + time * 0.18) % 3.35);
+      const material = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      material.opacity = 0.07 + Math.sin(time * 1.6 + index) * 0.025;
+    });
+  });
 
-export function AssistantAvatarStage({
+  return (
+    <group ref={groupRef}>
+      {rings.map((y, index) => (
+        <mesh key={`scan-${index}`} position={[0, y, 0.025]} scale={[2.22, 0.006, 1]}>
+          <planeGeometry args={[1, 1]} />
+          <meshBasicMaterial color={color} transparent opacity={0.18} depthWrite={false} blending={THREE.AdditiveBlending} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function HologramAvatar({
   isListening,
   isSpeaking,
   speakingVolume,
   viseme,
   emotion,
   listenerEmotion,
-  voiceGender,
+  voiceTone,
 }: AssistantAvatarStageProps) {
-  const variant = STAGE_VARIANTS[voiceGender];
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
-  const phaseRef = useRef(0);
-  const lastVisemeRef = useRef(-1);
-  const selectedAnchorRef = useRef(0);
-  const metadataReadyRef = useRef(false);
-  const interactionMode = isSpeaking ? 'speaking' : isListening ? 'listening' : 'idle';
-  const activeEmotion = interactionMode === 'listening' ? listenerEmotion : emotion;
+  const rootRef = useRef<THREE.Group>(null);
+  const portraitRef = useRef<THREE.Group>(null);
+  const auraRef = useRef<THREE.Mesh>(null);
+  const pedestalRef = useRef<THREE.Mesh>(null);
+  const loadedTexture = useLoader(THREE.TextureLoader, HUMAN_AVATAR_PATH);
+  const activeEmotion = isListening ? listenerEmotion : emotion;
+  const theme = EMOTION_THEME[activeEmotion];
+  const toneEnergy = TONE_ENERGY[voiceTone];
+  const hologramColor = new THREE.Color(theme.rim);
 
-  useEffect(() => {
-    if (variant.mediaType !== 'video' || !videoRef.current) return;
+  const portraitTexture = useMemo(() => {
+    loadedTexture.colorSpace = THREE.SRGBColorSpace;
+    loadedTexture.anisotropy = 12;
+    loadedTexture.needsUpdate = true;
+    return loadedTexture;
+  }, [loadedTexture]);
 
-    const video = videoRef.current;
-    video.pause();
+  const planeMaterial = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        map: portraitTexture,
+        toneMapped: false,
+        transparent: true,
+        opacity: 0.96,
+      }),
+    [portraitTexture]
+  );
 
-    if (!metadataReadyRef.current) {
-      return;
+  useFrame(({ clock, mouse }) => {
+    const time = clock.getElapsedTime();
+    const speech = isSpeaking ? THREE.MathUtils.clamp(speakingVolume, 0, 1) : 0;
+    const mouthEnergy = isSpeaking ? THREE.MathUtils.clamp(viseme / 8, 0, 1) : 0;
+    const listenLift = isListening ? 0.025 : 0;
+    const emotionTilt =
+      activeEmotion === 'thinking' ? -0.025 : activeEmotion === 'surprised' ? 0.02 : activeEmotion === 'sad' ? -0.015 : 0;
+    const targetX = THREE.MathUtils.clamp(mouse.y * 0.025 + emotionTilt, -0.035, 0.035);
+    const targetY = THREE.MathUtils.clamp(mouse.x * 0.05, -0.06, 0.06);
+
+    if (rootRef.current) {
+      rootRef.current.position.y = -0.16 + listenLift + Math.sin(time * (0.9 + toneEnergy)) * 0.018;
+      rootRef.current.rotation.x = THREE.MathUtils.lerp(rootRef.current.rotation.x, targetX, 0.045);
+      rootRef.current.rotation.y = THREE.MathUtils.lerp(rootRef.current.rotation.y, targetY + Math.sin(time * 0.22) * 0.035, 0.045);
+      rootRef.current.scale.setScalar(1 + speech * 0.012);
     }
 
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+    if (portraitRef.current) {
+      portraitRef.current.position.z = 0.02 + Math.sin(time * 0.7) * 0.025;
+      portraitRef.current.rotation.y = Math.sin(time * 0.35) * 0.018;
+      portraitRef.current.children.forEach((child, index) => {
+        child.position.z = -0.04 + index * 0.026 + Math.sin(time * 1.1 + index) * 0.006;
+        const material = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
+        material.opacity = index === 2 ? 0.9 : 0.16 + speech * 0.1;
+      });
     }
 
-    const tick = () => {
-      if (!metadataReadyRef.current) {
-        animationFrameRef.current = requestAnimationFrame(tick);
-        return;
-      }
-
-      if (interactionMode === 'speaking') {
-        const visemeKey = Math.max(0, Math.min(8, Math.round(viseme)));
-        const anchors = getEmotionAwareAnchors(visemeKey, activeEmotion);
-        if (lastVisemeRef.current !== visemeKey) {
-          selectedAnchorRef.current = (selectedAnchorRef.current + 1) % anchors.length;
-          lastVisemeRef.current = visemeKey;
-          phaseRef.current = 0;
-        }
-
-        phaseRef.current = (phaseRef.current + 0.1 + speakingVolume * 0.025) % 1;
-        const anchorIndex = Math.min(anchors.length - 1, selectedAnchorRef.current);
-        const mouthEnergy = Math.max(0, Math.min(1, speakingVolume));
-        const microMotion =
-          Math.sin(phaseRef.current * Math.PI * 2) *
-          (visemeKey === 0 ? 0.004 : 0.008 + mouthEnergy * 0.008);
-        const targetTime = Math.max(
-          VIDEO_SEGMENTS.speaking.start,
-          Math.min(VIDEO_SEGMENTS.speaking.end, anchors[anchorIndex] + microMotion)
-        );
-
-        if (Math.abs(video.currentTime - targetTime) > 0.012) {
-          video.currentTime = targetTime;
-        }
-      } else if (interactionMode === 'listening') {
-        lastVisemeRef.current = -1;
-        const span = VIDEO_SEGMENTS.listening.end - VIDEO_SEGMENTS.listening.start;
-        phaseRef.current = (phaseRef.current + 0.012) % 1;
-        const targetTime =
-          VIDEO_SEGMENTS.listening.start +
-          (Math.sin(phaseRef.current * Math.PI * 2) * 0.5 + 0.5) * span;
-
-        if (Math.abs(video.currentTime - targetTime) > 0.05) {
-          video.currentTime = targetTime;
-        }
-      } else {
-        lastVisemeRef.current = -1;
-        const span = VIDEO_SEGMENTS.idle.end - VIDEO_SEGMENTS.idle.start;
-        phaseRef.current = (phaseRef.current + 0.008) % 1;
-        const targetTime =
-          VIDEO_SEGMENTS.idle.start +
-          (Math.sin(phaseRef.current * Math.PI * 2) * 0.5 + 0.5) * span;
-
-        if (Math.abs(video.currentTime - targetTime) > 0.05) {
-          video.currentTime = targetTime;
-        }
-      }
-
-      animationFrameRef.current = requestAnimationFrame(tick);
-    };
-
-    animationFrameRef.current = requestAnimationFrame(tick);
-
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
-    };
-  }, [activeEmotion, interactionMode, speakingVolume, variant.mediaType, viseme]);
-
-  useEffect(() => {
-    if (variant.mediaType !== 'video' || !videoRef.current) return;
-    const video = videoRef.current;
-    video.pause();
-    video.currentTime = VIDEO_SEGMENTS.idle.start;
-    metadataReadyRef.current = false;
-    phaseRef.current = 0;
-  }, [voiceGender, variant.mediaType]);
-
-  const emotionTint = useMemo(() => {
-    if (activeEmotion === 'happy') return 'from-emerald-400/15 via-transparent to-fuchsia-400/10';
-    if (activeEmotion === 'sad') return 'from-sky-400/14 via-transparent to-slate-400/8';
-    if (activeEmotion === 'thinking') return 'from-amber-300/14 via-transparent to-violet-400/10';
-    if (activeEmotion === 'surprised') return 'from-rose-400/12 via-transparent to-cyan-300/10';
-    return 'from-white/10 via-transparent to-white/5';
-  }, [activeEmotion]);
-
-  const mediaTransform =
-    interactionMode === 'speaking'
-      ? `scale(${1.014 + speakingVolume * 0.012}) translateY(-2px)`
-      : interactionMode === 'listening'
-        ? 'scale(1.025) translateY(-4px)'
-        : 'scale(1.005) translateY(0px)';
-
-  const mediaFilter = useMemo(() => {
-    if (interactionMode === 'speaking') {
-      if (activeEmotion === 'happy') return 'saturate(1.08) contrast(1.03) brightness(1.01)';
-      if (activeEmotion === 'sad') return 'saturate(0.9) contrast(1.04) brightness(0.94)';
-      if (activeEmotion === 'thinking') return 'saturate(0.98) contrast(1.08) brightness(0.97)';
-      if (activeEmotion === 'surprised') return 'saturate(1.1) contrast(1.08) brightness(1.02)';
-      return 'saturate(1.02) contrast(1.04) brightness(0.99)';
+    if (auraRef.current) {
+      auraRef.current.scale.set(2.2 + speech * 0.12 + mouthEnergy * 0.04, 3.38 + speech * 0.16, 1);
+      const material = auraRef.current.material as THREE.MeshBasicMaterial;
+        material.opacity = 0.22 + speech * 0.12;
     }
 
-    if (interactionMode === 'listening') {
-      return 'saturate(0.96) contrast(1.06) brightness(0.95)';
+    if (pedestalRef.current) {
+      pedestalRef.current.rotation.z = time * 0.2;
+      pedestalRef.current.scale.x = 1.08 + speech * 0.08;
+      pedestalRef.current.scale.y = 0.18 + speech * 0.02;
     }
-
-    return 'saturate(0.98) contrast(1.02) brightness(0.96)';
-  }, [activeEmotion, interactionMode]);
-
-  const objectPosition =
-    interactionMode === 'listening'
-      ? 'center 20%'
-      : activeEmotion === 'thinking'
-        ? 'center 18%'
-        : 'center center';
-
-  const ringOpacity = interactionMode === 'speaking' ? 0.9 : interactionMode === 'listening' ? 0.6 : 0.35;
-  const ringScale = interactionMode === 'speaking' ? 1.05 + speakingVolume * 0.02 : 1;
-  const statusLabel =
-    interactionMode === 'speaking'
-      ? `Speaking - ${EMOTION_COPY[activeEmotion]}`
-      : interactionMode === 'listening'
-        ? `Listening - ${EMOTION_COPY[activeEmotion]}`
-        : `Ready - ${EMOTION_COPY[activeEmotion]}`;
+  });
 
   return (
-    <div className="relative h-full overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(108,71,255,0.24),_transparent_38%),radial-gradient(circle_at_bottom,_rgba(34,197,94,0.12),_transparent_28%),linear-gradient(180deg,_#030712_0%,_#0b1120_100%)]">
-      <style jsx>{`
-        .stage-float {
-          animation: stageFloat 6s ease-in-out infinite;
-        }
+    <group ref={rootRef} position={[0, -0.16, 0]}>
+      <HologramParticles color={theme.rim} />
 
-        .glass-sheen {
-          animation: glassSheen 10s linear infinite;
-        }
+      <mesh ref={auraRef} position={[0, -0.03, -0.08]} scale={[2.2, 3.38, 1]}>
+        <planeGeometry args={[1, 1.35]} />
+        <meshBasicMaterial color={theme.rim} transparent opacity={0.24} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </mesh>
 
-        .ambient-pulse {
-          animation: ambientPulse 4.8s ease-in-out infinite;
-        }
+      <group ref={portraitRef} position={[0, -0.04, 0]}>
+        {[-0.04, -0.015, 0.012, 0.04, 0.065].map((z, index) => (
+          <mesh
+            key={`depth-plane-${index}`}
+            position={[0, 0, z]}
+            rotation={[0, (index - 2) * 0.018, 0]}
+            scale={[2.08 + index * 0.014, 3.16 + index * 0.014, 1]}
+            renderOrder={10 + index}
+          >
+            <planeGeometry args={[1, 1.36, 64, 64]} />
+            <primitive object={index === 2 ? planeMaterial : planeMaterial.clone()} attach="material" />
+          </mesh>
+        ))}
+      </group>
 
-        @keyframes stageFloat {
-          0%,
-          100% {
-            transform: translateY(0px);
-          }
-          50% {
-            transform: translateY(-8px);
-          }
-        }
+      <HologramScanField color={theme.rim} />
 
-        @keyframes glassSheen {
-          0% {
-            transform: translateX(-120%) rotate(16deg);
-          }
-          100% {
-            transform: translateX(120%) rotate(16deg);
-          }
-        }
+      <mesh position={[0, -0.05, 0.17]} scale={[1.1, 1.72, 1]} renderOrder={30}>
+        <torusGeometry args={[1, 0.006, 10, 180]} />
+        <meshBasicMaterial color={theme.rim} transparent opacity={0.34} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </mesh>
+      <mesh position={[-1.14, -0.08, 0.12]} rotation={[0, 0, -0.02]} scale={[0.012, 3.25, 1]} renderOrder={31}>
+        <planeGeometry args={[1, 1]} />
+        <meshBasicMaterial color={theme.rim} transparent opacity={0.32} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </mesh>
+      <mesh position={[1.14, -0.08, 0.12]} rotation={[0, 0, 0.02]} scale={[0.012, 3.25, 1]} renderOrder={31}>
+        <planeGeometry args={[1, 1]} />
+        <meshBasicMaterial color={theme.rim} transparent opacity={0.32} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </mesh>
 
-        @keyframes ambientPulse {
-          0%,
-          100% {
-            opacity: 0.5;
-          }
-          50% {
-            opacity: 0.9;
-          }
-        }
+      <mesh ref={pedestalRef} position={[0, -1.5, 0.16]} rotation={[Math.PI / 2, 0, 0]} scale={[1.08, 0.18, 1]} renderOrder={32}>
+        <torusGeometry args={[1, 0.012, 12, 120]} />
+        <meshBasicMaterial color={theme.rim} transparent opacity={0.8} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </mesh>
+      <mesh position={[0, -1.5, 0.14]} rotation={[Math.PI / 2, 0, 0]} scale={[0.75, 0.75, 1]} renderOrder={31}>
+        <circleGeometry args={[1, 80]} />
+        <meshBasicMaterial color={theme.rim} transparent opacity={0.16} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </mesh>
+    </group>
+  );
+}
 
-        .idle-breathe {
-          animation: idleBreathe 7.5s ease-in-out infinite;
-        }
+export function AssistantAvatarStage(props: AssistantAvatarStageProps) {
+  const interactionMode = props.isSpeaking ? 'speaking' : props.isListening ? 'listening' : 'idle';
+  const activeEmotion = interactionMode === 'listening' ? props.listenerEmotion : props.emotion;
+  const theme = EMOTION_THEME[activeEmotion];
 
-        @keyframes idleBreathe {
-          0%,
-          100% {
-            transform: scale(1);
-          }
-          50% {
-            transform: scale(1.018);
-          }
-        }
-      `}</style>
+  return (
+    <div
+      className="relative h-full overflow-hidden bg-[#050814]"
+      style={{ boxShadow: `inset 0 0 110px ${theme.glow}` }}
+    >
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,_#050814_0%,_#070b18_55%,_#050814_100%)]" />
 
-      <div className="absolute inset-0 opacity-60">
-        <div className="ambient-pulse absolute left-[10%] top-[14%] h-36 w-36 rounded-full bg-fuchsia-500/14 blur-3xl" />
-        <div className="ambient-pulse absolute right-[12%] top-[28%] h-28 w-28 rounded-full bg-sky-400/14 blur-3xl" />
-        <div className="ambient-pulse absolute bottom-[10%] left-[20%] h-44 w-44 rounded-full bg-emerald-400/10 blur-3xl" />
-      </div>
+      <Canvas
+        camera={{ position: [0, 0.16, 4.65], fov: 35 }}
+        dpr={[1, 2]}
+        gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
+        className="absolute inset-0"
+      >
+        <color attach="background" args={['#050814']} />
+        <ambientLight intensity={1} />
+        <directionalLight position={[1.6, 2.2, 3.2]} intensity={0.65} color={theme.key} />
+        <Suspense fallback={null}>
+          <HologramAvatar {...props} />
+        </Suspense>
+      </Canvas>
 
-      <div className="absolute inset-x-0 top-10 z-10 flex justify-center px-6">
-        <div className="rounded-full border border-white/10 bg-slate-950/72 px-4 py-2 text-sm text-slate-100 backdrop-blur-xl">
-          {statusLabel}
-        </div>
-      </div>
-
-      <div className="absolute inset-x-0 bottom-0 top-24 flex items-center justify-center px-7 pb-14">
-        <div
-          className="stage-float relative h-[560px] w-[392px] max-w-full overflow-hidden rounded-[42px] border border-white/15 bg-white/5 p-3 backdrop-blur-xl transition-all duration-300"
-          style={{
-            boxShadow: `0 0 0 1px rgba(255,255,255,0.06), 0 24px 90px ${variant.glow}`,
-          }}
-        >
-          <div className="relative h-full overflow-hidden rounded-[34px] border border-white/10 bg-slate-950/40">
-            <div className={`absolute inset-0 bg-gradient-to-b ${emotionTint}`} />
-            <div
-              className="absolute inset-5 z-[1] rounded-[28px] border border-white/10 transition-all duration-200"
-              style={{
-                boxShadow: `0 0 0 1px rgba(255,255,255,0.03), 0 0 48px ${variant.glow}`,
-                opacity: ringOpacity,
-                transform: `scale(${ringScale})`,
-              }}
-            />
-
-            <div className="absolute inset-0 overflow-hidden">
-              {variant.mediaType === 'video' ? (
-                <video
-                  src={variant.mediaSrc}
-                  muted
-                  loop
-                  playsInline
-                  preload="auto"
-                  className="idle-breathe h-full w-full scale-110 object-cover object-center blur-3xl opacity-35"
-                />
-              ) : (
-                <img
-                  src={variant.mediaSrc}
-                  alt=""
-                  className="idle-breathe h-full w-full scale-110 object-cover object-center blur-3xl opacity-30"
-                />
-              )}
-            </div>
-
-            {variant.mediaType === 'video' ? (
-              <video
-                ref={videoRef}
-                src={variant.mediaSrc}
-                muted
-                playsInline
-                preload="auto"
-                onLoadedMetadata={(event) => {
-                  metadataReadyRef.current = true;
-                  event.currentTarget.currentTime = VIDEO_SEGMENTS.idle.start;
-                }}
-                className="relative z-[2] h-full w-full object-cover transition-transform duration-200"
-                style={{ transform: mediaTransform, filter: mediaFilter, objectPosition }}
-              />
-            ) : (
-              <img
-                src={variant.mediaSrc}
-                alt="Assistant portrait"
-                className="relative z-[2] h-full w-full object-cover transition-transform duration-300"
-                style={{ transform: mediaTransform, filter: mediaFilter, objectPosition }}
-              />
-            )}
-
-            <div className="absolute inset-0 z-[3] bg-[linear-gradient(180deg,rgba(2,6,23,0.05)_0%,rgba(2,6,23,0.12)_44%,rgba(2,6,23,0.38)_100%)]" />
-            <div className="absolute inset-0 z-[3] bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.18),_transparent_30%),radial-gradient(circle_at_bottom,_rgba(17,24,39,0.28),_transparent_45%)]" />
-            <div className="glass-sheen absolute -left-1/3 top-0 h-full w-1/3 bg-white/10 blur-2xl" />
-            <div className="absolute inset-x-[10%] top-[10%] z-[3] h-20 rounded-full bg-white/8 blur-3xl" />
-
-            <div className="absolute inset-x-0 bottom-0 z-[3] h-40 bg-gradient-to-t from-[#040812] via-[#040812]/70 to-transparent" />
-
-            <div className="absolute inset-x-0 bottom-4 z-[4] flex justify-center">
-              <div className="rounded-full border border-white/10 bg-slate-950/72 px-4 py-2 text-xs uppercase tracking-[0.26em] text-slate-200 backdrop-blur-xl">
-                {voiceGender === 'female' ? 'Real presence mode' : 'Studio presence mode'}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="pointer-events-none absolute inset-x-0 bottom-12 z-10 flex justify-center">
-        <div className="flex items-end gap-2">
-          {Array.from({ length: 7 }).map((_, index) => {
-            const height = isSpeaking
-              ? 14 + Math.max(4, speakingVolume * 40) - index * 1.4
-              : 10 + ((index + 1) % 3) * 4;
-            return (
-              <span
-                key={`presence-wave-${index}`}
-                className="w-2 rounded-full bg-gradient-to-t from-[#6c47ff] via-[#818cf8] to-[#34d399] opacity-80 transition-all duration-100"
-                style={{ height }}
-              />
-            );
-          })}
-        </div>
-      </div>
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(103,232,249,0.05)_1px,transparent_1px),linear-gradient(180deg,rgba(103,232,249,0.04)_1px,transparent_1px)] bg-[size:46px_46px] opacity-35" />
+      <div className="pointer-events-none absolute inset-x-[18%] bottom-9 h-14 rounded-full bg-cyan-300/10 blur-2xl" />
     </div>
   );
 }

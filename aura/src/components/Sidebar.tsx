@@ -105,6 +105,21 @@ const modelColorMap: Record<string, string> = {
   'Gemini 1.5': 'bg-blue-400',
 };
 
+function formatRecentConversationDate(date: Date) {
+  return date.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+  });
+}
+
+function formatRecentConversationTime(date: Date) {
+  return date.toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 function createSessionId() {
   return `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -475,7 +490,10 @@ export default function Sidebar({
                 />
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium text-foreground truncate">{conv.title}</p>
-                  <p className="text-xs text-muted-foreground truncate">{conv.model}</p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {conv.model} · {formatRecentConversationDate(conv.timestamp)} ·{' '}
+                    {formatRecentConversationTime(conv.timestamp)}
+                  </p>
                 </div>
                 {conv.starred && (
                   <Star size={11} className="text-amber-400 shrink-0 mt-1" fill="currentColor" />

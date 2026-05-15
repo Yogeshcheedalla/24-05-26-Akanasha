@@ -17,6 +17,9 @@ class ChatMessage(Base):
     role = Column(String, index=True) # 'user' or 'assistant'
     content = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    pinned = Column(Boolean, default=False, index=True)
+    display_order = Column(Float, nullable=True, index=True)
+    branch_from_id = Column(Integer, nullable=True, index=True)
 
 class Memory(Base):
     __tablename__ = "memories"
@@ -51,6 +54,7 @@ class UserProfile(Base):
     id = Column(Integer, primary_key=True, index=True)
     full_name = Column(String, default="Arjun Mehta")
     email = Column(String, default="arjun.mehta@devcraft.io")
+    bio = Column(Text, default="B.Tech student and AI enthusiast. Building the future with Akansha.")
     preferred_mode = Column(String, default="hybrid")
     voice_gender = Column(String, default="female")
     voice_tone = Column(String, default="friendly")
@@ -85,6 +89,8 @@ class SpeakerProfile(Base):
     access_level = Column(String, default="guest")  # owner | trusted | guest
     notes = Column(Text, nullable=True)
     last_intro_text = Column(Text, nullable=True)
+    last_heard_text = Column(Text, nullable=True)
+    voice_signature_json = Column(Text, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
@@ -104,9 +110,52 @@ def ensure_profile_columns():
             connection.execute(text("ALTER TABLE user_profiles ADD COLUMN username VARCHAR"))
         if "password" not in existing_columns:
             connection.execute(text("ALTER TABLE user_profiles ADD COLUMN password VARCHAR"))
+        if "bio" not in existing_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE user_profiles ADD COLUMN bio TEXT DEFAULT 'B.Tech student and AI enthusiast. Building the future with Akansha.'"
+                )
+            )
 
 
 ensure_profile_columns()
+
+
+def ensure_speaker_columns():
+    with engine.begin() as connection:
+        try:
+            column_rows = connection.execute(text("PRAGMA table_info(speaker_profiles)")).fetchall()
+        except Exception:
+            return
+
+        existing_columns = {row[1] for row in column_rows}
+        if "last_heard_text" not in existing_columns:
+            connection.execute(text("ALTER TABLE speaker_profiles ADD COLUMN last_heard_text TEXT"))
+        if "voice_signature_json" not in existing_columns:
+            connection.execute(text("ALTER TABLE speaker_profiles ADD COLUMN voice_signature_json TEXT"))
+
+
+ensure_speaker_columns()
+
+
+def ensure_chat_message_columns():
+    with engine.begin() as connection:
+        try:
+            column_rows = connection.execute(text("PRAGMA table_info(chat_messages)")).fetchall()
+        except Exception:
+            return
+
+        existing_columns = {row[1] for row in column_rows}
+        if "pinned" not in existing_columns:
+            connection.execute(text("ALTER TABLE chat_messages ADD COLUMN pinned BOOLEAN DEFAULT 0"))
+        if "display_order" not in existing_columns:
+            connection.execute(text("ALTER TABLE chat_messages ADD COLUMN display_order FLOAT"))
+            connection.execute(text("UPDATE chat_messages SET display_order = id WHERE display_order IS NULL"))
+        if "branch_from_id" not in existing_columns:
+            connection.execute(text("ALTER TABLE chat_messages ADD COLUMN branch_from_id INTEGER"))
+
+
+ensure_chat_message_columns()
 
 def get_db():
     db = SessionLocal()

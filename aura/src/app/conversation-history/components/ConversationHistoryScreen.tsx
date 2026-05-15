@@ -5,7 +5,26 @@ import FolderSidebar from './FolderSidebar';
 import ConversationList from './ConversationList';
 import ConversationPreview from './ConversationPreview';
 import { clearSessionTitles, deleteSessionTitle, getSessionTitle } from '@/hooks/chatSessionTitles';
+import {
+  clearConversationMetadata,
+  DEFAULT_CONVERSATION_FOLDERS,
+  readConversationFolders,
+  readConversationMetadata,
+  slugFolderId,
+  writeConversationFolders,
+  writeConversationMetadata,
+  type ConversationFolder,
+  type ConversationMetadata,
+  type ConversationStatus,
+} from '@/lib/chatHistoryMetadata';
 import { toast } from 'sonner';
+
+export type ConversationMessage = {
+  id: number | string;
+  role: string;
+  content: string;
+  timestamp?: string;
+};
 
 export type Conversation = {
   id: string;
@@ -25,7 +44,8 @@ export type Conversation = {
   hasMemory: boolean;
   hasAttachments: boolean;
   tags: string[];
-  status: 'active' | 'archived' | 'summarized';
+  status: ConversationStatus;
+  messages: ConversationMessage[];
 };
 
 export const ALL_CONVERSATIONS: Conversation[] = [
@@ -47,6 +67,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: true,
     tags: ['typescript', 'backend', 'security'],
     status: 'active',
+    messages: [],
   },
   {
     id: 'conv-h002',
@@ -67,6 +88,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: false,
     tags: ['ai', 'ml', 'research'],
     status: 'active',
+    messages: [],
   },
   {
     id: 'conv-h003',
@@ -87,6 +109,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: true,
     tags: ['product', 'strategy', 'planning'],
     status: 'summarized',
+    messages: [],
   },
   {
     id: 'conv-h004',
@@ -106,6 +129,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: false,
     tags: ['database', 'postgresql', 'performance'],
     status: 'active',
+    messages: [],
   },
   {
     id: 'conv-h005',
@@ -125,6 +149,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: true,
     tags: ['devops', 'kubernetes', 'infrastructure'],
     status: 'active',
+    messages: [],
   },
   {
     id: 'conv-h006',
@@ -144,6 +169,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: true,
     tags: ['rag', 'vector-db', 'embeddings'],
     status: 'summarized',
+    messages: [],
   },
   {
     id: 'conv-h007',
@@ -164,6 +190,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: false,
     tags: ['react', 'nextjs', 'frontend'],
     status: 'active',
+    messages: [],
   },
   {
     id: 'conv-h008',
@@ -183,6 +210,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: false,
     tags: ['business', 'pricing', 'strategy'],
     status: 'active',
+    messages: [],
   },
   {
     id: 'conv-h009',
@@ -202,6 +230,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: false,
     tags: ['networking', 'streaming', 'backend'],
     status: 'archived',
+    messages: [],
   },
   {
     id: 'conv-h010',
@@ -221,6 +250,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: false,
     tags: ['writing', 'marketing', 'email'],
     status: 'active',
+    messages: [],
   },
   {
     id: 'conv-h011',
@@ -240,6 +270,7 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: true,
     tags: ['terraform', 'aws', 'devops'],
     status: 'summarized',
+    messages: [],
   },
   {
     id: 'conv-h012',
@@ -260,10 +291,16 @@ export const ALL_CONVERSATIONS: Conversation[] = [
     hasAttachments: false,
     tags: ['ai', 'transformers', 'research'],
     status: 'active',
+    messages: [],
   },
 ];
 
-function buildLiveConversations(messages: any[]): Conversation[] {
+function buildLiveConversations(
+  messages: any[],
+  folders: ConversationFolder[],
+  metadata: ReturnType<typeof readConversationMetadata>
+): Conversation[] {
+  const folderById = new Map(folders.map((folder) => [folder.id, folder.name]));
   const sessions = new Map<
     string,
     {
@@ -275,6 +312,7 @@ function buildLiveConversations(messages: any[]): Conversation[] {
       messageCount: number;
       tokenCount: number;
       hasAttachments: boolean;
+      messages: ConversationMessage[];
     }
   >();
 
@@ -295,6 +333,7 @@ function buildLiveConversations(messages: any[]): Conversation[] {
         messageCount: 1,
         tokenCount: Math.max(1, Math.floor(content.length / 4)),
         hasAttachments: Boolean(message.attachments?.length),
+        messages: [message],
       });
       return;
     }
@@ -302,6 +341,7 @@ function buildLiveConversations(messages: any[]): Conversation[] {
     existing.messageCount += 1;
     existing.tokenCount += Math.max(1, Math.floor(content.length / 4));
     existing.hasAttachments = existing.hasAttachments || Boolean(message.attachments?.length);
+    existing.messages.push(message);
 
     if (timestamp < existing.first) existing.first = timestamp;
     if (timestamp >= existing.latest) {
@@ -315,33 +355,41 @@ function buildLiveConversations(messages: any[]): Conversation[] {
   });
 
   return Array.from(sessions.values())
-    .map((session) => ({
-      id: session.id,
-      title: getSessionTitle(session.id, session.title || 'New chat'),
-      summary:
-        session.summary.length > 180
-          ? `${session.summary.slice(0, 177).trim()}...`
-          : session.summary,
-      model: 'Akansha',
-      modelColor: 'bg-green-500',
-      folder: 'Chats',
-      folderId: 'folder-chats',
-      messageCount: session.messageCount,
-      tokenCount: session.tokenCount,
-      createdAt: session.first.toISOString(),
-      updatedAt: session.latest.toISOString(),
-      starred: false,
-      shared: false,
-      hasMemory: true,
-      hasAttachments: session.hasAttachments,
-      tags: ['chat'],
-      status: 'active' as const,
-    }))
+    .map((session) => {
+      const sessionMeta = metadata[session.id] ?? {};
+      const folderId = sessionMeta.folderId || DEFAULT_CONVERSATION_FOLDERS[0].id;
+      return {
+        id: session.id,
+        title: getSessionTitle(session.id, session.title || 'New chat'),
+        summary:
+          session.summary.length > 180
+            ? `${session.summary.slice(0, 177).trim()}...`
+            : session.summary,
+        model: 'Akansha',
+        modelColor: 'bg-green-500',
+        folder: folderById.get(folderId) || 'Chats',
+        folderId,
+        messageCount: session.messageCount,
+        tokenCount: session.tokenCount,
+        createdAt: session.first.toISOString(),
+        updatedAt: session.latest.toISOString(),
+        starred: Boolean(sessionMeta.starred),
+        shared: Boolean(sessionMeta.shared),
+        hasMemory: true,
+        hasAttachments: session.hasAttachments,
+        tags: ['chat'],
+        status: sessionMeta.status || 'active',
+        messages: session.messages.sort(
+          (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+        ),
+      };
+    })
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
 export default function ConversationHistoryScreen() {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [folders, setFolders] = useState<ConversationFolder[]>(DEFAULT_CONVERSATION_FOLDERS);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -350,9 +398,12 @@ export default function ConversationHistoryScreen() {
   const loadConversations = useCallback(async () => {
     setLoading(true);
     try {
+      const storedFolders = readConversationFolders();
+      const metadata = readConversationMetadata();
+      setFolders(storedFolders);
       const response = await fetch('http://localhost:8000/api/chat');
       const payload = await response.json();
-      const liveConversations = buildLiveConversations(payload.messages ?? []);
+      const liveConversations = buildLiveConversations(payload.messages ?? [], storedFolders, metadata);
       setConversations(liveConversations);
       setSelectedConversation((current) => {
         if (!current) return liveConversations[0] ?? null;
@@ -366,6 +417,18 @@ export default function ConversationHistoryScreen() {
       setLoading(false);
     }
   }, []);
+
+  const updateConversationMetadata = useCallback(
+    (ids: string[], update: ConversationMetadata) => {
+      const metadata = readConversationMetadata();
+      ids.forEach((id) => {
+        metadata[id] = { ...(metadata[id] ?? {}), ...update };
+      });
+      writeConversationMetadata(metadata);
+      void loadConversations();
+    },
+    [loadConversations]
+  );
 
   useEffect(() => {
     void loadConversations();
@@ -422,6 +485,7 @@ export default function ConversationHistoryScreen() {
       }
 
       clearSessionTitles();
+      clearConversationMetadata();
       setConversations([]);
       setSelectedConversation(null);
       setSelectedIds(new Set());
@@ -433,6 +497,78 @@ export default function ConversationHistoryScreen() {
     }
   }, []);
 
+  const createFolder = useCallback((name: string) => {
+    const nextFolder = { id: slugFolderId(name), name };
+    const nextFolders = [...folders, nextFolder];
+    writeConversationFolders(nextFolders);
+    setFolders(nextFolders);
+    setSelectedFolder(nextFolder.id);
+    toast.success(`Folder "${name}" created`);
+  }, [folders]);
+
+  const moveConversations = useCallback(
+    (ids: string[], folderId: string) => {
+      const folder = folders.find((item) => item.id === folderId);
+      if (!folder) {
+        toast.error('Choose a valid folder');
+        return;
+      }
+
+      updateConversationMetadata(ids, { folderId });
+      toast.success(`${ids.length} conversation${ids.length > 1 ? 's' : ''} moved to ${folder.name}`);
+    },
+    [folders, updateConversationMetadata]
+  );
+
+  const archiveConversations = useCallback(
+    (ids: string[]) => {
+      updateConversationMetadata(ids, { status: 'archived' });
+      toast.success(`${ids.length} conversation${ids.length > 1 ? 's' : ''} archived`);
+    },
+    [updateConversationMetadata]
+  );
+
+  const toggleStar = useCallback(
+    (id: string) => {
+      const current = conversations.find((conversation) => conversation.id === id);
+      updateConversationMetadata([id], { starred: !current?.starred });
+      toast.success(current?.starred ? 'Removed from starred' : 'Added to starred');
+    },
+    [conversations, updateConversationMetadata]
+  );
+
+  const exportConversations = useCallback(
+    (ids: string[]) => {
+      const selected = conversations.filter((conversation) => ids.includes(conversation.id));
+      if (!selected.length) return;
+
+      const blob = new Blob([JSON.stringify(selected, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `akansha-conversations-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast.success(`${selected.length} conversation${selected.length > 1 ? 's' : ''} exported`);
+    },
+    [conversations]
+  );
+
+  const emptyTrash = useCallback(() => {
+    const archivedIds = conversations
+      .filter((conversation) => conversation.status === 'archived')
+      .map((conversation) => conversation.id);
+
+    if (!archivedIds.length) {
+      toast.info('No archived conversations to delete');
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete ${archivedIds.length} archived conversation${archivedIds.length > 1 ? 's' : ''}?`);
+    if (!confirmed) return;
+    void deleteConversations(archivedIds);
+  }, [conversations, deleteConversations]);
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Folder sidebar */}
@@ -441,6 +577,9 @@ export default function ConversationHistoryScreen() {
           selectedFolder={selectedFolder}
           onSelectFolder={setSelectedFolder}
           conversations={conversations}
+          folders={folders}
+          onCreateFolder={createFolder}
+          onEmptyTrash={emptyTrash}
         />
       </div>
 
@@ -456,6 +595,10 @@ export default function ConversationHistoryScreen() {
           loading={loading}
           onDeleteConversations={deleteConversations}
           onClearHistory={clearHistory}
+          folders={folders}
+          onMoveConversations={moveConversations}
+          onArchiveConversations={archiveConversations}
+          onExportConversations={exportConversations}
         />
       </div>
 
@@ -466,6 +609,9 @@ export default function ConversationHistoryScreen() {
             conversation={selectedConversation}
             onClose={() => setSelectedConversation(null)}
             onDeleteConversation={(id) => deleteConversations([id])}
+            onArchiveConversation={(id) => archiveConversations([id])}
+            onToggleStar={toggleStar}
+            onExportConversation={(id) => exportConversations([id])}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8">

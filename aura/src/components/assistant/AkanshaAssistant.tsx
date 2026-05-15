@@ -13,10 +13,12 @@ import {
   Clock3,
   Loader2,
   Mail,
+  Maximize2,
   MessageCircleMore,
   MessageSquareReply,
   Mic,
   MicOff,
+  Minimize2,
   PauseCircle,
   Play,
   RefreshCw,
@@ -31,6 +33,7 @@ import { toast } from 'sonner';
 import {
   useVoice,
   type VoiceGender,
+  type VoiceFrequencySignature,
   type VoiceLanguagePreference,
   type VoiceTone,
 } from '@/hooks/useVoice';
@@ -52,6 +55,10 @@ import { isAutomationIntent, normalizeAutomationPrompt } from '@/lib/automationC
 
 type AssistantMode = 'text' | 'voice' | 'hybrid';
 type AssistantEmotion = 'happy' | 'neutral' | 'thinking' | 'sad' | 'surprised';
+
+function isAlertReminderIntent(text: string) {
+  return /\b(alert|alarm|reminder|remainder|notify|notification|pop\s*up|popup|remind me)\b/i.test(text);
+}
 
 interface ProfileResponse {
   profile: {
@@ -174,12 +181,55 @@ interface SpeakerProfileData {
   access_level: SpeakerAccessLevel;
   notes: string | null;
   last_intro_text: string | null;
+  last_heard_text: string | null;
+  voice_signature?: {
+    sample_text?: string;
+    language_preference?: VoiceLanguagePreference;
+    tone_preference?: VoiceTone;
+    word_count?: number;
+    average_word_length?: number;
+    vowel_ratio?: number;
+    audio_frequency?: VoiceFrequencySignature | null;
+    created_at?: string;
+  } | null;
   timestamp: string | null;
 }
 
 type PendingSpeakerIntro = {
   displayName: string | null;
   relationship: string | null;
+  sampleText?: string;
+};
+
+const AUTOMATION_READINESS_CHECKLIST = [
+  'Continuous voice command loop',
+  'Open websites and desktop apps',
+  'Fill website form details',
+  'Ask before submit with popup',
+  'Submit after owner confirmation',
+  'YouTube search and result play',
+  'Scroll page one step at a time',
+  'Pause or resume present media',
+  'Close current tab or window',
+  'Set, increase, or decrease volume',
+  'Edit active fields and shortcuts',
+  'Warn before risky commands',
+  'First-time speaker onboarding',
+  'Owner, trusted, and guest limits',
+  'True 3D mesh avatar stage',
+];
+
+const SPEAKER_RELATIONSHIP_ALIASES: Record<string, string> = {
+  amma: 'mother',
+  mom: 'mother',
+  mummy: 'mother',
+  mother: 'mother',
+  dad: 'father',
+  nanna: 'father',
+  father: 'father',
+  self: 'owner',
+  me: 'owner',
+  myself: 'owner',
 };
 
 function detectUserTone(text: string): AssistantEmotion {
@@ -209,9 +259,11 @@ function emotionLabel(emotion: AssistantEmotion) {
 function extractSpeakerIntro(text: string) {
   const normalized = text.trim();
   const lowered = normalized.toLowerCase();
+  const relationshipAlternates =
+    'mother|mom|mummy|amma|father|dad|nanna|brother|sister|wife|husband|friend|owner|self|me|myself|teacher|colleague|cousin|uncle|aunty|aunt|guest';
 
   const relationshipMatch = lowered.match(
-    /\b(mother|mom|mummy|amma|father|dad|nanna|brother|sister|wife|husband|friend|owner|self|me|myself|teacher|colleague|cousin|uncle|aunty|aunt|guest)\b/i
+    new RegExp(`\\b(${relationshipAlternates})\\b`, 'i')
   );
   const relationshipWords = new Set([
     'mother',
@@ -249,9 +301,12 @@ function extractSpeakerIntro(text: string) {
   for (const pattern of namePatterns) {
     const match = normalized.match(pattern);
     if (match?.[1]) {
-      displayName = match[1]
-        .replace(/\b(and|for|to|with|relationship|relation)\b.*$/i, '')
-        .trim();
+      const rawName = match[1].replace(/\b(and|for|to|with|relationship|relation)\b.*$/i, '').trim();
+      const rawNameLower = rawName.toLowerCase().replace(/\s+/g, ' ');
+      const shouldKeepRelationshipWordAsName = rawNameLower === 'amma' || /yogesh/i.test(rawName);
+      displayName = shouldKeepRelationshipWordAsName
+        ? rawName
+        : rawName.replace(new RegExp(`\\b(?:${relationshipAlternates})\\b.*$`, 'i'), '').trim();
       break;
     }
   }
@@ -265,6 +320,7 @@ function extractSpeakerIntro(text: string) {
   }
 
   let relationship = relationshipMatch?.[1]?.toLowerCase() ?? null;
+  relationship = relationship ? SPEAKER_RELATIONSHIP_ALIASES[relationship] || relationship : null;
   if (displayName && /yogesh/i.test(displayName)) {
     relationship = 'owner';
   }
@@ -279,6 +335,54 @@ function speakerAccessLabel(accessLevel: SpeakerAccessLevel) {
   if (accessLevel === 'owner') return 'full access';
   if (accessLevel === 'trusted') return 'trusted access';
   return 'guest access';
+}
+
+function buildVoiceSignature(
+  sampleText: string | undefined,
+  languagePreference: VoiceLanguagePreference,
+  tonePreference: VoiceTone,
+  audioFrequency: VoiceFrequencySignature | null
+) {
+  const normalized = (sampleText || '').trim();
+  const words = normalized.split(/\s+/).filter(Boolean);
+  const lettersOnly = normalized.toLowerCase().replace(/[^a-z]/g, '');
+  const vowelCount = (lettersOnly.match(/[aeiou]/g) || []).length;
+  const totalCharacters = words.reduce((total, word) => total + word.length, 0);
+
+  return {
+    sample_text: normalized,
+    language_preference: languagePreference,
+    tone_preference: tonePreference,
+    word_count: words.length,
+    average_word_length: words.length ? Number((totalCharacters / words.length).toFixed(2)) : 0,
+    vowel_ratio: lettersOnly.length ? Number((vowelCount / lettersOnly.length).toFixed(3)) : 0,
+    audio_frequency: audioFrequency,
+    created_at: new Date().toISOString(),
+  };
+}
+
+function speakerFrequencyDistance(
+  saved: VoiceFrequencySignature | null | undefined,
+  current: VoiceFrequencySignature | null | undefined
+) {
+  if (!saved || !current || current.sampleCount < 12) return 0;
+  const centroidDistance =
+    Math.abs(saved.spectralCentroidHz - current.spectralCentroidHz) /
+    Math.max(900, saved.spectralCentroidHz, current.spectralCentroidHz);
+  const bandDistance =
+    Math.abs(saved.lowBandEnergy - current.lowBandEnergy) +
+    Math.abs(saved.midBandEnergy - current.midBandEnergy) +
+    Math.abs(saved.highBandEnergy - current.highBandEnergy);
+  const levelDistance = Math.abs(saved.rmsLevel - current.rmsLevel) * 2.5;
+  return centroidDistance + bandDistance * 0.5 + levelDistance;
+}
+
+function shouldChallengeSpeakerIdentity(
+  speaker: SpeakerProfileData | null,
+  currentFrequency: VoiceFrequencySignature | null
+) {
+  const savedFrequency = speaker?.voice_signature?.audio_frequency;
+  return speakerFrequencyDistance(savedFrequency, currentFrequency) > 0.72;
 }
 
 const AssistantAvatarStage = dynamic(
@@ -305,6 +409,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
     transcript,
     finalTranscript,
     speakingVolume,
+    voiceFrequencySignature,
     viseme,
     voiceChoices,
     voiceGender,
@@ -349,12 +454,15 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   const [selectedReply, setSelectedReply] = useState<Record<number, string>>({});
   const [sendingReplyId, setSendingReplyId] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(true);
+  const [avatarFullscreen, setAvatarFullscreen] = useState(false);
   const conversationRef = useRef<HTMLDivElement>(null);
+  const voiceTurnTimerRef = useRef<number | null>(null);
   const spokenOffsetRef = useRef(0);
   const pendingPlannerRef = useRef<PlannerCommand | null>(null);
   const plannerContextRef = useRef('');
   const speakerProfilesRef = useRef<SpeakerProfileData[]>([]);
   const activeSpeakerRef = useRef<SpeakerProfileData | null>(null);
+  const activeResponseAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     speakerProfilesRef.current = speakerProfiles;
@@ -366,6 +474,12 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       window.localStorage.setItem('akansha-active-speaker', activeSpeaker.display_name);
     }
   }, [activeSpeaker]);
+
+  useEffect(() => {
+    return () => {
+      activeResponseAbortRef.current?.abort();
+    };
+  }, []);
 
   const loadProfile = useCallback(async () => {
     setLoadingProfile(true);
@@ -382,6 +496,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       setVoiceGender(profileData.profile.voice_gender);
       setVoiceTone(profileData.profile.voice_tone);
       setVoiceLanguage(profileData.profile.voice_language);
+      window.localStorage.setItem('akansha_voice_language', profileData.profile.voice_language);
       setBackgroundListening(profileData.profile.background_listening);
       setGoogleStatus(googleData);
     } catch (error) {
@@ -450,10 +565,25 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   }, [responseText, transcript, streaming]);
 
   useEffect(() => {
-    if (!finalTranscript) return;
-    void handleConversationTurn(finalTranscript, 'voice');
-    clearTranscript();
-  }, [clearTranscript, finalTranscript]);
+    const settledTranscript = finalTranscript.trim() || transcript.trim();
+    if (!settledTranscript) return;
+    if (voiceTurnTimerRef.current) {
+      window.clearTimeout(voiceTurnTimerRef.current);
+    }
+
+    voiceTurnTimerRef.current = window.setTimeout(() => {
+      void handleConversationTurn(settledTranscript, 'voice');
+      clearTranscript();
+      voiceTurnTimerRef.current = null;
+    }, finalTranscript.trim() ? 520 : 950);
+
+    return () => {
+      if (voiceTurnTimerRef.current) {
+        window.clearTimeout(voiceTurnTimerRef.current);
+        voiceTurnTimerRef.current = null;
+      }
+    };
+  }, [clearTranscript, finalTranscript, transcript]);
 
   const queueReadySpeech = useCallback(
     (fullText: string, force = false) => {
@@ -536,6 +666,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           voiceLanguage,
           voiceTone,
           queue: true,
+          preferBrowser: isFirstSpokenChunk || cleaned.length <= 180,
         });
       }
     },
@@ -592,20 +723,164 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
     stopSpeaking,
   ]);
 
+  useEffect(() => {
+    if (loadingProfile || isListening || isSpeaking || streaming) return;
+    if (assistantMode === 'text') return;
+
+    if (!backgroundListening) {
+      setBackgroundListening(true);
+      void persistProfilePatch({ background_listening: true });
+    }
+
+    const timer = window.setTimeout(() => {
+      startListening();
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    assistantMode,
+    backgroundListening,
+    isListening,
+    isSpeaking,
+    loadingProfile,
+    persistProfilePatch,
+    setBackgroundListening,
+    startListening,
+    streaming,
+  ]);
+
+  const saveSpeakerProfile = useCallback(
+    async (intro: PendingSpeakerIntro, inputMode: 'voice' | 'text') => {
+      const displayName = intro.displayName?.trim();
+      if (!displayName) {
+        throw new Error('Speaker name is required');
+      }
+
+      const res = await fetch('http://localhost:8000/api/voice/speakers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          display_name: displayName,
+          relationship_to_owner: intro.relationship,
+          notes: `Voice onboarding from ${inputMode} mode`,
+          last_heard_text: intro.sampleText || '',
+          voice_signature: buildVoiceSignature(
+            intro.sampleText,
+            voiceLanguage,
+            voiceTone,
+            voiceFrequencySignature
+          ),
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Could not save speaker profile');
+      }
+
+      const data: { speaker: SpeakerProfileData } = await res.json();
+      const nextSpeaker = data.speaker;
+      setSpeakerProfiles((current) => {
+        const filtered = current.filter((item) => item.id !== nextSpeaker.id);
+        return [...filtered, nextSpeaker];
+      });
+      setActiveSpeaker(nextSpeaker);
+      return nextSpeaker;
+    },
+    [voiceFrequencySignature, voiceLanguage, voiceTone]
+  );
+
   const handleConversationTurn = useCallback(
     async (message: string, inputMode: 'voice' | 'text') => {
       const trimmed = message.trim();
+      const startContinuousCommand =
+        /^(please start|start listening|start voice|continue listening|wake up|listen again)$/i.test(trimmed);
+      const stopContinuousCommand =
+        /^(stop|stop listening|pause listening|sleep|voice off|microphone off|mic off)$/i.test(trimmed);
       const interruptionCommand =
         /^(stop|wait|pause|hold on|enough|mute|silent|aagu|aapu|ruko|ruk jao)$/i.test(trimmed) ||
         /^(ఆపు|ఆగు|रुको|बस)$/i.test(trimmed);
 
       if (!trimmed) return;
 
+      const shouldInterruptActiveReply = isSpeaking || streaming || activeResponseAbortRef.current;
+      if (shouldInterruptActiveReply) {
+        activeResponseAbortRef.current?.abort();
+        activeResponseAbortRef.current = null;
+        stopSpeaking();
+        setStreaming(false);
+        spokenOffsetRef.current = 0;
+        if (interruptionCommand) {
+          setAssistantEmotion('thinking');
+          setResponseText('Okay, I stopped. I am listening again.');
+          if (backgroundListening && inputMode === 'voice') {
+            startListening();
+          }
+          clearTranscript();
+          return;
+        }
+      }
+
+      if (inputMode === 'voice' && startContinuousCommand) {
+        setBackgroundListening(true);
+        void persistProfilePatch({ background_listening: true });
+        startListening();
+        const confirmation = 'I am listening continuously again. Tell me the next task.';
+        setAssistantEmotion('happy');
+        setResponseText(confirmation);
+        void speak(confirmation, {
+          voiceGender,
+          voiceLanguage,
+          voiceTone,
+          queue: false,
+          preferBrowser: true,
+        });
+        clearTranscript();
+        return;
+      }
+
+      if (inputMode === 'voice' && stopContinuousCommand) {
+        setBackgroundListening(false);
+        void persistProfilePatch({ background_listening: false });
+        stopListening();
+        stopSpeaking();
+        const confirmation =
+          'Okay, continuous voice is paused. Press the mic or say please start after turning the mic on again.';
+        setAssistantEmotion('thinking');
+        setResponseText(confirmation);
+        clearTranscript();
+        return;
+      }
+
+      if (
+        inputMode === 'voice' &&
+        activeSpeakerRef.current &&
+        !awaitingSpeakerIntro &&
+        shouldChallengeSpeakerIdentity(activeSpeakerRef.current, voiceFrequencySignature)
+      ) {
+        window.localStorage.removeItem('akansha-active-speaker');
+        activeSpeakerRef.current = null;
+        setActiveSpeaker(null);
+        const introPrompt =
+          'Who are you? I am listening to a different voice for the first time. Tell me your name and your relationship to Yogesh so I can set the correct limits.';
+        setAwaitingSpeakerIntro(true);
+        setPendingSpeakerIntro({ displayName: null, relationship: null, sampleText: trimmed });
+        setAssistantEmotion('thinking');
+        setResponseText(introPrompt);
+        void speak(introPrompt, {
+          voiceGender,
+          voiceLanguage,
+          voiceTone,
+          queue: false,
+        });
+        return;
+      }
+
       if (inputMode === 'voice' && awaitingSpeakerIntro) {
         const intro = extractSpeakerIntro(trimmed);
         const nextIntro = {
           displayName: intro.displayName || pendingSpeakerIntro?.displayName || null,
           relationship: intro.relationship || pendingSpeakerIntro?.relationship || null,
+          sampleText: pendingSpeakerIntro?.sampleText || trimmed,
         };
 
         if (!nextIntro.displayName) {
@@ -638,27 +913,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         }
 
         try {
-          const res = await fetch('http://localhost:8000/api/voice/speakers', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              display_name: nextIntro.displayName,
-              relationship_to_owner: nextIntro.relationship,
-              notes: `Voice onboarding from ${inputMode} mode`,
-            }),
-          });
-
-          if (!res.ok) {
-            throw new Error('Could not save speaker profile');
-          }
-
-          const data: { speaker: SpeakerProfileData } = await res.json();
-          const nextSpeaker = data.speaker;
-          setSpeakerProfiles((current) => {
-            const filtered = current.filter((item) => item.id !== nextSpeaker.id);
-            return [...filtered, nextSpeaker];
-          });
-          setActiveSpeaker(nextSpeaker);
+          const nextSpeaker = await saveSpeakerProfile(nextIntro, inputMode);
           setAwaitingSpeakerIntro(false);
           setPendingSpeakerIntro(null);
 
@@ -694,6 +949,77 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         !awaitingSpeakerIntro &&
         !/^(stop|wait|pause|hold on|enough|mute|silent|aagu|aapu|ruko|ruk jao)$/i.test(trimmed)
       ) {
+        const intro = extractSpeakerIntro(trimmed);
+        if (intro.displayName || intro.relationship) {
+          const nextIntro = {
+            displayName: intro.displayName,
+            relationship: intro.relationship,
+            sampleText: trimmed,
+          };
+
+          if (!nextIntro.displayName) {
+            const followUp =
+              'I heard the relationship, but I still need your name. Say something like: my name is Amma.';
+            setAwaitingSpeakerIntro(true);
+            setPendingSpeakerIntro(nextIntro);
+            setAssistantEmotion('thinking');
+            setResponseText(followUp);
+            void speak(followUp, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+            return;
+          }
+
+          if (!nextIntro.relationship) {
+            const followUp = `Thanks ${nextIntro.displayName}. Now tell me your relationship to Yogesh, like mother, father, friend, or owner.`;
+            setAwaitingSpeakerIntro(true);
+            setPendingSpeakerIntro(nextIntro);
+            setAssistantEmotion('thinking');
+            setResponseText(followUp);
+            void speak(followUp, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+            return;
+          }
+
+          try {
+            const nextSpeaker = await saveSpeakerProfile(nextIntro, inputMode);
+            setAwaitingSpeakerIntro(false);
+            setPendingSpeakerIntro(null);
+            const confirmation = `Nice to meet you, ${nextSpeaker.display_name}. I will remember that you are ${nextSpeaker.relationship_to_owner ?? 'connected to Yogesh'} and I will respond with ${speakerAccessLabel(nextSpeaker.access_level)}.`;
+            setAssistantEmotion('happy');
+            setResponseText(confirmation);
+            void speak(confirmation, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+            return;
+          } catch (error) {
+            console.error('Failed to save voice speaker:', error);
+            const fallback =
+              'I understood your introduction, but I could not save your voice profile just now. Please try once more.';
+            setAwaitingSpeakerIntro(true);
+            setPendingSpeakerIntro(nextIntro);
+            setAssistantEmotion('thinking');
+            setResponseText(fallback);
+            void speak(fallback, {
+              voiceGender,
+              voiceLanguage,
+              voiceTone,
+              queue: false,
+            });
+            return;
+          }
+        }
+
         const introPrompt =
           'Who are you? I am hearing you for the first time. Tell me your name and your relationship to Yogesh so I can remember your voice profile.';
         setAwaitingSpeakerIntro(true);
@@ -709,18 +1035,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         return;
       }
 
-      if (interruptionCommand && (isSpeaking || streaming)) {
-        stopSpeaking();
-        setStreaming(false);
-        setAssistantEmotion('thinking');
-        setResponseText('Okay, I stopped. I am listening again.');
-        if (backgroundListening && inputMode === 'voice') {
-          startListening();
-        }
-        clearTranscript();
-        return;
-      }
-      if (streaming) return;
+      if (streaming && !shouldInterruptActiveReply) return;
 
       const currentSpeaker = activeSpeakerRef.current;
       const speakerIsLimited = inputMode === 'voice' && currentSpeaker && currentSpeaker.access_level !== 'owner';
@@ -869,7 +1184,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         return;
       }
 
-      if (isAutomationIntent(trimmed)) {
+      if (!isAlertReminderIntent(trimmed) && isAutomationIntent(trimmed)) {
         const automationPrompt = normalizeAutomationPrompt(trimmed);
         setAssistantEmotion('thinking');
         setStreaming(true);
@@ -1018,11 +1333,14 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       setAssistantEmotion(inferredEmotion === 'sad' ? 'thinking' : inferredEmotion);
       setStreaming(true);
       setResponseText('');
+      const controller = new AbortController();
+      activeResponseAbortRef.current = controller;
 
       try {
         const response = await fetch('http://localhost:8000/api/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             message: trimmed,
             session_id: sessionId,
@@ -1075,14 +1393,25 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           }
         }
       } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
         console.error('Voice assistant stream failed:', error);
         const fallback =
           "I'm sorry - the real-time channel dropped. Please check that the Python backend is running and OpenRouter is configured.";
         setResponseText(fallback);
         toast.error('Akansha could not finish that response');
       } finally {
-        setStreaming(false);
-        setTypedMessage('');
+        if (activeResponseAbortRef.current === controller) {
+          activeResponseAbortRef.current = null;
+        }
+        if (!controller.signal.aborted) {
+          setStreaming(false);
+          setTypedMessage('');
+          if (backgroundListening && inputMode === 'voice') {
+            window.setTimeout(() => startListening(), 120);
+          }
+        }
       }
     },
     [
@@ -1093,10 +1422,12 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       isSpeaking,
       pendingSpeakerIntro,
       queueReadySpeech,
+      saveSpeakerProfile,
       sessionId,
       startListening,
       stopSpeaking,
       streaming,
+      voiceFrequencySignature,
       voiceGender,
       voiceLanguage,
       voiceTone,
@@ -1235,13 +1566,25 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
   );
 
   return (
-    <div className="space-y-8 pb-10">
+    <div
+      className={
+        avatarFullscreen
+          ? 'fixed inset-0 z-[80] overflow-y-auto bg-slate-950 p-4'
+          : 'space-y-8 pb-10'
+      }
+    >
       <div
         className={`grid grid-cols-1 items-start gap-6 ${
-          showSettings ? 'xl:grid-cols-[1.65fr_0.95fr]' : ''
+          showSettings && !avatarFullscreen ? 'xl:grid-cols-[1.65fr_0.95fr]' : ''
         }`}
       >
-      <section className="flex flex-col rounded-3xl border border-white/10 bg-slate-950 shadow-[0_40px_120px_rgba(15,23,42,0.6)]">
+      <section
+        className={`flex flex-col border border-white/10 bg-slate-950 shadow-[0_40px_120px_rgba(15,23,42,0.6)] ${
+          avatarFullscreen
+            ? 'min-h-[calc(100vh-2rem)] rounded-[28px]'
+            : 'rounded-3xl'
+        }`}
+      >
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div>
             <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
@@ -1259,6 +1602,14 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
             </div>
 
             <button
+              onClick={() => setAvatarFullscreen((fullscreen) => !fullscreen)}
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-white/10"
+            >
+              {avatarFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+              {avatarFullscreen ? 'Exit full screen' : 'Full screen'}
+            </button>
+
+            <button
               onClick={() => setShowSettings((open) => !open)}
               className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition-colors hover:bg-white/10"
             >
@@ -1268,10 +1619,19 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           </div>
         </div>
 
-        <div className="grid flex-1 grid-cols-1 gap-6 p-6 lg:grid-cols-[1.2fr_0.8fr]">
-          <div className="flex min-h-[580px] flex-col overflow-hidden rounded-[28px] border border-white/10 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-950">
+        <div
+          className={`grid flex-1 grid-cols-1 gap-6 p-6 ${
+            avatarFullscreen
+              ? 'lg:grid-cols-[minmax(680px,1fr)_minmax(300px,380px)]'
+              : 'lg:grid-cols-[minmax(520px,1.45fr)_minmax(300px,0.72fr)]'
+          }`}
+        >
+          <div
+            className={`flex flex-col overflow-hidden rounded-[28px] border border-white/10 bg-slate-950 ${
+              avatarFullscreen ? 'min-h-[calc(100vh-12rem)]' : 'min-h-[720px]'
+            }`}
+          >
             <div className="relative flex-1">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(108,71,255,0.3),_transparent_48%),radial-gradient(circle_at_bottom,_rgba(34,197,94,0.15),_transparent_35%)]" />
               <AssistantAvatarStage
                 isListening={isListening}
                 isSpeaking={isSpeaking}
@@ -1280,38 +1640,23 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
                 emotion={assistantEmotion}
                 listenerEmotion={userEmotion}
                 voiceGender={voiceGender}
+                voiceTone={voiceTone}
               />
 
-              <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center pt-5">
-                <div className="rounded-full border border-white/10 bg-black/30 px-4 py-2 text-sm text-slate-200 backdrop-blur-md">
-                  {profile?.full_name ?? 'Companion mode'} · {emotionLabel(assistantEmotion)}
-                </div>
-              </div>
-
               <div className="absolute inset-x-0 bottom-0 flex flex-col gap-4 p-6">
-                <div className="grid grid-cols-5 gap-2">
-                  {Array.from({ length: 5 }).map((_, index) => {
-                    const active = isSpeaking
-                      ? Math.max(0.22, speakingVolume - index * 0.08)
-                      : isListening
-                        ? 0.55 - index * 0.06
-                        : 0.16;
-                    return (
-                      <div
-                        key={`wave-bar-${index}`}
-                        className="h-20 rounded-full bg-gradient-to-t from-[#6c47ff] via-[#38bdf8] to-[#34d399] transition-all duration-150"
-                        style={{
-                          transform: `scaleY(${Math.max(active, 0.14)})`,
-                          transformOrigin: 'bottom',
-                        }}
-                      />
-                    );
-                  })}
-                </div>
-
                 <div className="flex flex-wrap items-center justify-center gap-3">
                   <button
-                    onClick={isListening ? stopListening : startListening}
+                    onClick={() => {
+                      if (isListening || backgroundListening) {
+                        setBackgroundListening(false);
+                        void persistProfilePatch({ background_listening: false });
+                        stopListening();
+                        return;
+                      }
+                      setBackgroundListening(true);
+                      void persistProfilePatch({ background_listening: true });
+                      startListening();
+                    }}
                     className={`inline-flex h-14 w-14 items-center justify-center rounded-full transition-all ${
                       isListening
                         ? 'bg-red-500 text-white shadow-[0_0_40px_rgba(239,68,68,0.35)]'
@@ -1361,6 +1706,9 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
                       key={option.value}
                       onClick={() => {
                         setAssistantMode(option.value);
+                        if (option.value === 'voice') {
+                          setAvatarFullscreen(true);
+                        }
                         void persistProfilePatch({ preferred_mode: option.value });
                       }}
                       className={`rounded-full px-3 py-1.5 text-sm transition-colors ${
@@ -1441,8 +1789,34 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         </div>
       </section>
 
-      {showSettings && (
+      {showSettings && !avatarFullscreen && (
         <aside className="flex flex-col gap-5 xl:self-start">
+          <section className="rounded-3xl border border-white/10 bg-slate-900/85 p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">
+                  Automation checklist
+                </p>
+                <h2 className="mt-2 text-lg font-semibold text-white">Ready checks</h2>
+              </div>
+              <CheckCheck size={20} className="text-emerald-300" />
+            </div>
+
+            <div className="mt-5 grid max-h-[340px] gap-2 overflow-y-auto pr-1">
+              {AUTOMATION_READINESS_CHECKLIST.map((item) => (
+                <div
+                  key={item}
+                  className="flex items-center gap-3 rounded-2xl border border-emerald-400/10 bg-emerald-400/5 px-3 py-2.5 text-sm text-slate-100"
+                >
+                  <span className="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-emerald-400/15 text-emerald-200">
+                    <Check size={13} />
+                  </span>
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
           <section className="rounded-3xl border border-white/10 bg-slate-900/85 p-5">
             <div className="flex items-center justify-between">
               <div>
@@ -1495,6 +1869,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
                       key={option.value}
                       onClick={() => {
                         setVoiceLanguage(option.value);
+                        window.localStorage.setItem('akansha_voice_language', option.value);
                         void persistProfilePatch({ voice_language: option.value });
                       }}
                       className={`rounded-2xl px-4 py-3 text-sm transition-colors ${
@@ -1582,6 +1957,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
               </label>
             </div>
           </section>
+
         </aside>
       )}
       </div>

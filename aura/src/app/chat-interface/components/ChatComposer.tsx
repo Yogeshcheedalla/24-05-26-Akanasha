@@ -11,6 +11,7 @@ import {
 
 interface ChatComposerProps {
   onSend: (content: string, attachments?: File[]) => void;
+  onStop?: () => void;
   onOpenPromptLibrary: () => void;
   isStreaming: boolean;
   selectedModel: string;
@@ -18,50 +19,73 @@ interface ChatComposerProps {
   isListening?: boolean;
 }
 
-export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming, onToggleMic, isListening }: ChatComposerProps) {
+export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isStreaming, onToggleMic, isListening }: ChatComposerProps) {
   const [content, setContent] = useState('');
+  const redoStackRef = useRef<string[]>([]);
   const [attachments, setAttachments] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const shouldRefocusAfterStreamRef = useRef(false);
+  const lastClipboardImagePasteRef = useRef<{ signature: string; time: number } | null>(null);
   const slashSuggestions = React.useMemo(
     () => getSlashCommandSuggestions(content).slice(0, 8),
     [content]
   );
   const showSlashMenu = slashSuggestions.length > 0 && content.trimStart().startsWith('/');
 
+  const resizeComposer = useCallback(() => {
+    if (!textareaRef.current) return;
+    textareaRef.current.style.height = 'auto';
+    textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+  }, []);
+
+  const setComposerContent = useCallback(
+    (value: string, options?: { clearRedo?: boolean }) => {
+      setContent(value);
+      if (options?.clearRedo !== false) {
+        redoStackRef.current = [];
+      }
+      requestAnimationFrame(resizeComposer);
+    },
+    [resizeComposer]
+  );
+
+  const removeLastWord = useCallback((value: string) => {
+    const withoutTrailingSpace = value.replace(/\s+$/, '');
+    if (!withoutTrailingSpace) return '';
+    const lastWord = withoutTrailingSpace.match(/\S+$/);
+    if (!lastWord || lastWord.index === undefined) return '';
+    return withoutTrailingSpace.slice(0, lastWord.index);
+  }, []);
+
   React.useEffect(() => {
     const handleApplyPrompt = (e: any) => {
       const promptText = e.detail;
-      setContent(promptText);
+      setComposerContent(promptText);
+
       if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-        textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
         textareaRef.current.focus();
       }
     };
     window.addEventListener('akansha-apply-prompt', handleApplyPrompt);
     return () => window.removeEventListener('akansha-apply-prompt', handleApplyPrompt);
-  }, []);
+  }, [setComposerContent]);
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setContent(e.target.value);
+    const newValue = e.target.value;
+    setComposerContent(newValue);
     setSelectedSlashIndex(0);
-    const el = e.target;
-    el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   };
 
   const focusAndResize = useCallback(() => {
     requestAnimationFrame(() => {
       if (!textareaRef.current) return;
       textareaRef.current.focus();
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+      resizeComposer();
     });
-  }, []);
+  }, [resizeComposer]);
 
   React.useEffect(() => {
     if (isStreaming || !shouldRefocusAfterStreamRef.current) return;
@@ -73,14 +97,41 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
     (command: SlashCommandDefinition) => {
       const trimmed = content.trimStart();
       const remainder = trimmed.replace(/^\/\S*\s*/, '').trim();
-      setContent(`/${command.name}${remainder ? ` ${remainder}` : ' '}`);
+      const newValue = `/${command.name}${remainder ? ` ${remainder}` : ' '}`;
+      setComposerContent(newValue);
       setSelectedSlashIndex(0);
       focusAndResize();
     },
-    [content, focusAndResize]
+    [content, focusAndResize, setComposerContent]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        const restored = redoStackRef.current.pop();
+        if (restored !== undefined) {
+          setComposerContent(restored, { clearRedo: false });
+        }
+      } else {
+        const nextValue = removeLastWord(content);
+        if (nextValue !== content) {
+          redoStackRef.current.push(content);
+          setComposerContent(nextValue, { clearRedo: false });
+        }
+      }
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+      e.preventDefault();
+      const restored = redoStackRef.current.pop();
+      if (restored !== undefined) {
+        setComposerContent(restored, { clearRedo: false });
+      }
+      return;
+    }
+
     if (showSlashMenu) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -110,29 +161,88 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
     }
   };
 
+  const canSend = Boolean(content.trim() || attachments.length > 0);
+
   const handleSend = () => {
-    if (!content.trim() || isStreaming) return;
+    if (!canSend) return;
     shouldRefocusAfterStreamRef.current = true;
-    onSend(expandSlashCommand(content), attachments.length > 0 ? attachments : undefined);
-    setContent('');
+    const messageText = content.trim()
+      ? expandSlashCommand(content)
+      : 'Analyze the attached image or screenshot carefully. Read visible text, inspect the UI, and explain what you see with reasoning.';
+    onSend(messageText, attachments.length > 0 ? attachments : undefined);
+    setComposerContent('');
     setAttachments([]);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
     focusAndResize();
   };
 
+  const addFiles = useCallback((files: File[]) => {
+    if (files.length === 0) return;
+    setAttachments((prev) => [...prev, ...files].slice(0, 5));
+    focusAndResize();
+  }, [focusAndResize]);
+
   const handleFileSelect = (files: FileList | null) => {
     if (!files) return;
-    const newFiles = Array.from(files).slice(0, 5);
-    setAttachments(prev => [...prev, ...newFiles].slice(0, 5));
+    addFiles(Array.from(files).slice(0, 5));
   };
+
+  const extractClipboardImages = useCallback((clipboardData: DataTransfer | null | undefined) => {
+    const clipboardItems = Array.from(clipboardData?.items || []);
+    const pastedImages = clipboardItems
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item, index) => {
+        const file = item.getAsFile();
+        if (!file) return null;
+        const extension = file.type.split('/')[1] || 'png';
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        return new File([file], `pasted-screenshot-${timestamp}-${index + 1}.${extension}`, {
+          type: file.type,
+          lastModified: Date.now(),
+        });
+      })
+      .filter((file): file is File => Boolean(file));
+
+    return pastedImages;
+  }, []);
+
+  const attachClipboardImages = useCallback((clipboardData: DataTransfer | null | undefined) => {
+    const pastedImages = extractClipboardImages(clipboardData);
+    if (pastedImages.length === 0) return false;
+
+    const signature = pastedImages
+      .map((file) => `${file.type}:${file.size}:${file.name}`)
+      .join('|');
+    const previous = lastClipboardImagePasteRef.current;
+    const now = Date.now();
+    if (previous?.signature === signature && now - previous.time < 750) {
+      return true;
+    }
+
+    lastClipboardImagePasteRef.current = { signature, time: now };
+    addFiles(pastedImages);
+    return true;
+  }, [addFiles, extractClipboardImages]);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!attachClipboardImages(e.clipboardData)) return;
+    e.preventDefault();
+  }, [attachClipboardImages]);
+
+  React.useEffect(() => {
+    const handleWindowPaste = (event: ClipboardEvent) => {
+      if (!attachClipboardImages(event.clipboardData)) return;
+      event.preventDefault();
+    };
+
+    window.addEventListener('paste', handleWindowPaste);
+    return () => window.removeEventListener('paste', handleWindowPaste);
+  }, [attachClipboardImages]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    handleFileSelect(e.dataTransfer.files);
-  }, []);
+    addFiles(Array.from(e.dataTransfer.files));
+  }, [addFiles]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -238,12 +348,11 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
           ref={textareaRef}
           value={content}
           onChange={handleInput}
+          onPaste={handlePaste}
           onKeyDown={handleKeyDown}
           placeholder="Message Akansha... Type / for commands"
           rows={1}
           className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none leading-relaxed min-h-[52px]"
-          readOnly={isStreaming}
-          aria-disabled={isStreaming}
         />
 
         <div className="flex items-center justify-between px-3 pb-3">
@@ -288,18 +397,23 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
             <span className="text-xs text-muted-foreground/60 hidden sm:block">
               {content.length > 0 && `${content.length} chars`}
             </span>
-            {isStreaming ? (
-              <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-medium hover:bg-red-500/20 transition-colors">
+            {isStreaming && (
+              <button
+                type="button"
+                onClick={onStop}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-medium hover:bg-red-500/20 transition-colors"
+              >
                 <Square size={12} fill="currentColor" />
                 Stop
               </button>
-            ) : (
+            )}
+            {!isStreaming || canSend ? (
               <button
                 onClick={handleSend}
-                disabled={!content.trim()}
+                disabled={!canSend}
                 className={`
                   flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-150 active:scale-95
-                  ${content.trim()
+                  ${canSend
                     ? 'bg-[#6C47FF] hover:bg-[#5A35EE] text-white shadow-sm shadow-[#6C47FF]/20'
                     : 'bg-muted text-muted-foreground cursor-not-allowed'
                   }
@@ -308,7 +422,7 @@ export default function ChatComposer({ onSend, onOpenPromptLibrary, isStreaming,
                 <Send size={13} />
                 Send
               </button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>

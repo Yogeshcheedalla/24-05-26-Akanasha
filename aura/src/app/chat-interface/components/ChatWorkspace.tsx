@@ -7,6 +7,9 @@ import ContextPanel from './ContextPanel';
 import PromptTemplateModal from './PromptTemplateModal';
 import { PanelLeft } from 'lucide-react';
 
+const TOKEN_USAGE_STORAGE_KEY = 'akansha-token-usage';
+const MAX_CONTEXT_TOKENS = 128000;
+
 function createSessionId() {
   return `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -29,6 +32,18 @@ export default function ChatWorkspace() {
   React.useEffect(() => {
     sessionStorage.setItem('akansha-current-session', sessionId);
   }, [sessionId]);
+
+  React.useEffect(() => {
+    const usage = {
+      sessionId,
+      messages: chatStats.messages,
+      tokens: chatStats.tokens,
+      maxTokens: MAX_CONTEXT_TOKENS,
+      updatedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem(TOKEN_USAGE_STORAGE_KEY, JSON.stringify(usage));
+    window.dispatchEvent(new CustomEvent('akansha-token-usage-updated', { detail: usage }));
+  }, [chatStats.messages, chatStats.tokens, sessionId]);
 
   React.useEffect(() => {
     const handleTogglePanel = () => {

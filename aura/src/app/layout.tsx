@@ -1,6 +1,6 @@
 import React from 'react';
 import type { Metadata, Viewport } from 'next';
-import '../styles/index.css';
+import '../styles/tailwind.css';
 
 import PlannerReminderBridge from '../components/planner/PlannerReminderBridge';
 export const viewport: Viewport = {
