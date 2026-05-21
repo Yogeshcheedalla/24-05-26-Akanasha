@@ -74,3 +74,60 @@ aura/debug_prompt.txt
 # Agent logs
 .agent/
 .codex/
+
+# SQLite sidecars
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Akansha/Hermes runtime databases and local stores
+aura/backend/hermes/database/*.db
+aura/backend/hermes/database/*.db-*
+aura/backend/hermes/database/*.sqlite
+aura/backend/hermes/database/*.sqlite*
+aura/backend/hermes/database/*.sqlite3
+aura/backend/hermes/database/*.sqlite3*
+aura/backend/uploads/
+aura/backend/generated/
+aura/backend/tmp/
+aura/backend/.cache/
+aura/backend/local_storage/
+aura/backend/memory/
+aura/backend/vector_store/
+aura/backend/chroma/
+aura/backend/faiss/
+
+# Generated artifacts and exports
+generated/
+downloads/
+exports/
+artifacts/
+aura/public/generated/
+aura/generated/
+aura/downloads/
+aura/exports/
+aura/artifacts/
+
+# Voice, screenshot, and media scratch files
+recordings/
+screenshots/
+aura/recordings/
+aura/screenshots/
+*.webm
+*.wav
+*.mp3.tmp
+*.mp4.tmp
+*.png.tmp
+*.jpg.tmp
+
+# Provider/tool caches and local config
+.openrouter-cache/
+.openai-cache/
+.mcp-cache/
+.codex-cache/
+*.local.json
+*.local.yaml
+*.local.yml

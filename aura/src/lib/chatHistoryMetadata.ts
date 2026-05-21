@@ -41,15 +41,10 @@ function writeJson<T>(key: string, value: T) {
 }
 
 export function readConversationFolders(): ConversationFolder[] {
-  const folders = readJson<ConversationFolder[]>(FOLDERS_KEY, DEFAULT_CONVERSATION_FOLDERS);
-  const seen = new Set<string>();
-  return [...DEFAULT_CONVERSATION_FOLDERS, ...folders]
-    .filter((folder) => folder.id && folder.name)
-    .filter((folder) => {
-      if (seen.has(folder.id)) return false;
-      seen.add(folder.id);
-      return true;
-    });
+  if (typeof window !== 'undefined' && !window.localStorage.getItem(FOLDERS_KEY)) {
+    return DEFAULT_CONVERSATION_FOLDERS;
+  }
+  return readJson<ConversationFolder[]>(FOLDERS_KEY, DEFAULT_CONVERSATION_FOLDERS);
 }
 
 export function writeConversationFolders(folders: ConversationFolder[]) {
