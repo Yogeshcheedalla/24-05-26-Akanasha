@@ -9,7 +9,8 @@ export type SlashCommandCategory =
   | 'Coding'
   | 'Social'
   | 'Security'
-  | 'Language';
+  | 'Language'
+  | 'Cognitive';
 
 export type SlashCommandDefinition = {
   name: string;
@@ -89,6 +90,35 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     category: 'Admin',
     description: 'Create a risk register.',
     template: 'Create a risk register with risk, likelihood, impact, mitigation, owner, and review date:\n{input}',
+  },
+  {
+    name: 'twin',
+    category: 'Cognitive',
+    description: 'Use Akansha digital twin reasoning for personal prediction and planning.',
+    template:
+      'Use Akansha Cognitive Digital Twin mode. Build a personal context model, simulate likely outcomes, predict risks, compare choices, recommend the best action, and explain confidence:\n{input}',
+    aliases: ['digital-twin'],
+  },
+  {
+    name: 'simulate',
+    category: 'Cognitive',
+    description: 'Compare future scenarios with probabilities, risks, and recommendations.',
+    template:
+      'Run a future simulation. Compare scenarios, estimate timeline, resources, success probability, risk score, hidden dependencies, and final recommendation:\n{input}',
+  },
+  {
+    name: 'goal',
+    category: 'Cognitive',
+    description: 'Turn a long-term goal into milestones, tasks, risks, and tracking.',
+    template:
+      'Use the Autonomous Goal Engine. Decompose this into goals, subgoals, milestones, tasks, dependencies, deadlines, progress metrics, blockers, and next actions:\n{input}',
+  },
+  {
+    name: 'breakdown',
+    category: 'Cognitive',
+    description: 'Break a large conversation or task into a compact execution plan.',
+    template:
+      'Break this large request into a compact execution plan. Extract intent, constraints, risks, required agents, required skills, verification checks, and the shortest safe workflow:\n{input}',
   },
   {
     name: 'audit',
@@ -282,6 +312,45 @@ export function expandSlashCommand(value: string) {
 
   const input = parsed.remainder || inputFallback;
   return parsed.command.template.replace('{input}', input);
+}
+
+export function autoRouteCognitivePrompt(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('/')) return value;
+
+  const normalized = trimmed.toLowerCase();
+  const cognitiveSignals = [
+    'digital twin',
+    'simulate',
+    'prediction',
+    'predict',
+    'future',
+    'risk',
+    'goal',
+    'milestone',
+    'deadline',
+    'decision',
+    'compare options',
+    'long term',
+    'startup',
+    'project plan',
+    'break down',
+    'breakdown',
+  ];
+  const looksLikeLargeGoal =
+    trimmed.length > 420 &&
+    /(goal|plan|project|startup|future|risk|milestone|deadline|decision|simulate|predict)/i.test(trimmed);
+
+  if (!looksLikeLargeGoal && !cognitiveSignals.some((signal) => normalized.includes(signal))) {
+    return value;
+  }
+
+  return [
+    'Use Akansha Cognitive Digital Twin and Goal Engine routing for this request.',
+    'Extract the real goal, compress noisy context, simulate outcomes, predict risks, choose the best workflow, and explain confidence before action.',
+    '',
+    trimmed,
+  ].join('\n');
 }
 
 export function getSlashCommandSuggestions(value: string) {

@@ -63,6 +63,30 @@ class TaskAnalyzerAgent:
         dependencies = ["CoordinatorAgent", "ValidationAgent"]
         if intent == "live_research":
             dependencies.extend(["ResearchAgent", "QualityAgent"])
+        if intent == "goal_management":
+            dependencies.extend(["PlanningAgent", "ResearchAgent", "MemoryAgent", "AnalysisAgent", "QualityAgent"])
+        if intent == "commerce":
+            dependencies.extend(["ShoppingAgent", "ResearchAgent", "AnalysisAgent", "SecurityAgent", "QualityAgent"])
+        if intent == "booking":
+            dependencies.extend(["BookingAgent", "PlanningAgent", "ResearchAgent", "SecurityAgent", "QualityAgent"])
+        if intent == "life_automation":
+            dependencies.extend(["AutomationAgent", "PlanningAgent", "MemoryAgent", "SecurityAgent"])
+        if intent == "concierge":
+            dependencies.extend(["ConciergeAgent", "PlanningAgent", "ResearchAgent", "AutomationAgent", "QualityAgent"])
+        if intent == "education":
+            dependencies.extend(["ResearchAgent", "CreativeAgent", "MemoryAgent", "QualityAgent"])
+        if intent == "communication":
+            dependencies.extend(["PlanningAgent", "AutomationAgent", "SecurityAgent", "QualityAgent"])
+        if intent == "data_processing":
+            dependencies.extend(["DataAgent", "AnalysisAgent", "FileAgent", "QualityAgent"])
+        if intent == "media":
+            dependencies.extend(["CreativeAgent", "AnalysisAgent", "FileAgent", "QualityAgent"])
+        if intent == "file_management":
+            dependencies.extend(["FileAgent", "AutomationAgent", "SecurityAgent"])
+        if intent == "api_workflow":
+            dependencies.extend(["CodingAgent", "TestingAgent", "SecurityAgent", "DeploymentAgent"])
+        if intent == "system_management":
+            dependencies.extend(["AutomationAgent", "TestingAgent", "SecurityAgent", "QualityAgent"])
         if intent == "artifact_generation":
             dependencies.extend(["FileAgent", "DataAgent", "QualityAgent"])
         if intent == "coding":

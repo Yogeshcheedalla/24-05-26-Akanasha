@@ -13,6 +13,7 @@ INTENT_AGENTS = {
     "live_research": ["ResearchAgent", "AnalysisAgent", "QualityAgent"],
     "automation": ["PlanningAgent", "AutomationAgent", "BrowserAgent", "SecurityAgent", "QualityAgent"],
     "coding": ["PlanningAgent", "CodingAgent", "TestingAgent", "QualityAgent", "SecurityAgent"],
+    "goal_management": ["PlanningAgent", "ResearchAgent", "MemoryAgent", "AnalysisAgent", "QualityAgent"],
     "conversation": ["MemoryAgent", "PlanningAgent"],
 }
 

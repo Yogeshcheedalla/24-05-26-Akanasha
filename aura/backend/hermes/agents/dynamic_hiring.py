@@ -31,6 +31,30 @@ class DynamicHiringEngine:
         selected.extend(agent for agent in dependencies if agent in AGENT_TYPES)
         if intent == "live_research":
             selected.extend(["ResearchAgent", "AnalysisAgent"])
+        if intent == "goal_management":
+            selected.extend(["PlanningAgent", "ResearchAgent", "MemoryAgent", "AnalysisAgent", "QualityAgent"])
+        if intent == "commerce":
+            selected.extend(["ShoppingAgent", "ResearchAgent", "AnalysisAgent", "SecurityAgent", "QualityAgent"])
+        if intent == "booking":
+            selected.extend(["BookingAgent", "PlanningAgent", "ResearchAgent", "SecurityAgent", "QualityAgent"])
+        if intent == "life_automation":
+            selected.extend(["AutomationAgent", "PlanningAgent", "MemoryAgent", "SecurityAgent", "QualityAgent"])
+        if intent == "concierge":
+            selected.extend(["ConciergeAgent", "PlanningAgent", "ResearchAgent", "AutomationAgent", "QualityAgent"])
+        if intent == "education":
+            selected.extend(["ResearchAgent", "CreativeAgent", "MemoryAgent", "QualityAgent"])
+        if intent == "communication":
+            selected.extend(["AutomationAgent", "SecurityAgent", "QualityAgent"])
+        if intent == "data_processing":
+            selected.extend(["DataAgent", "AnalysisAgent", "FileAgent", "QualityAgent"])
+        if intent == "media":
+            selected.extend(["CreativeAgent", "AnalysisAgent", "FileAgent", "QualityAgent"])
+        if intent == "file_management":
+            selected.extend(["FileAgent", "AutomationAgent", "SecurityAgent"])
+        if intent == "api_workflow":
+            selected.extend(["CodingAgent", "TestingAgent", "SecurityAgent", "DeploymentAgent"])
+        if intent == "system_management":
+            selected.extend(["AutomationAgent", "TestingAgent", "SecurityAgent", "QualityAgent"])
         if intent == "artifact_generation":
             selected.extend(["FileAgent", "DataAgent"])
         if intent == "coding":

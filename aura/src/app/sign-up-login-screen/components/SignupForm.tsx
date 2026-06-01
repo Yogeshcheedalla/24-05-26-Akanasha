@@ -127,7 +127,7 @@ export default function SignupForm({ onSwitchToLogin }: SignupFormProps) {
       }
       window.open(data.auth_url, '_blank', 'noopener,noreferrer');
     } catch (error) {
-      console.error('Failed to start Google sign-up:', error);
+      console.warn('Failed to start Google sign-up:', error);
       toast.error('Google uplink failure', { className: 'bg-black border-red-500 text-red-400 font-mono' });
     }
   };

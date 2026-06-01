@@ -333,13 +333,6 @@ export default function MessageBubble({ message, onTogglePin, onContinueFrom, is
           )}
         </div>
 
-        {/* Token count */}
-        {message.tokenCount && !isUser && (
-          <span className="text-xs text-muted-foreground/50 font-mono tabular-nums px-1">
-            {message.tokenCount} tokens
-          </span>
-        )}
-
         {/* Actions (AI messages only) */}
         {!message.isStreaming && (
           <div className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${isUser ? 'flex-row-reverse' : ''}`}>

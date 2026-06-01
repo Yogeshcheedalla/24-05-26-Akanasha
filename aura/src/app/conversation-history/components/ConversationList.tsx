@@ -27,7 +27,7 @@ const SORT_OPTIONS = [
   { key: 'sort-updated', label: 'Last updated', value: 'updated' },
   { key: 'sort-created', label: 'Date created', value: 'created' },
   { key: 'sort-messages', label: 'Message count', value: 'messages' },
-  { key: 'sort-tokens', label: 'Token count', value: 'tokens' },
+  { key: 'sort-tokens', label: 'Context size', value: 'tokens' },
 ];
 
 function formatRelativeTime(dateStr: string): string {
@@ -393,9 +393,9 @@ export default function ConversationList({
 
                     <span className="text-muted-foreground/30">-</span>
 
-                    {/* Token count */}
+                    {/* Context size */}
                     <span className="text-xs text-muted-foreground font-mono tabular-nums">
-                      {(conv.tokenCount / 1000).toFixed(1)}k tokens
+                      {(conv.tokenCount / 1000).toFixed(1)}k context
                     </span>
 
                     {/* Indicators */}

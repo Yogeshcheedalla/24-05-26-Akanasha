@@ -1,9 +1,11 @@
+import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend import automation
+from backend import ai_engine as ai_engine_module
 from backend.ai_engine import (
     _build_direct_live_data_context,
     _build_live_answer_hint,
@@ -14,16 +16,23 @@ from backend.ai_engine import (
     _detect_output_formats,
     _detect_emotional_state,
     _detect_user_language_preference,
+    _extract_relationship_name_fact,
     _extract_matchups_from_live_context,
     _fetch_ipl_standings_context,
     _fetch_news_direct_context,
     _humor_policy,
     _language_instruction,
+    _local_attachment_question_answer,
     _needs_structured_table,
     _parse_ipl_standings_rows,
     _preferred_live_source_profile,
+    _fast_local_reply_for_provider_failure,
+    _provider_failure_fallback,
     _split_live_questions,
     _needs_live_web_context,
+    _response_token_limit,
+    _should_skip_ai_memory_analysis,
+    _should_use_fast_local_reply,
     build_social_intelligence_context,
 )
 from backend.artifact_engine import (
@@ -38,6 +47,7 @@ from backend.main import (
     build_browser_prompt_plan,
     extract_send_message_details,
     hash_password,
+    is_broken_assistant_response,
     normalize_auth_email,
     verify_password,
 )
@@ -145,7 +155,8 @@ class AuditRegressionTests(unittest.TestCase):
         )
 
         self.assertIn("Active speaker: Amma", context)
-        self.assertIn("Relationship to owner Yogesh: mother", context)
+        self.assertIn("Relationship to owner the owner: mother", context)
+        self.assertNotIn("Relationship to owner Yogesh", context)
         self.assertIn("Closeness level: close", context)
         self.assertIn("food, health, rest", context)
         self.assertIn("Telugu + English", context)
@@ -155,10 +166,23 @@ class AuditRegressionTests(unittest.TestCase):
     def test_social_intelligence_context_defaults_to_owner_for_chat_session(self):
         context = build_social_intelligence_context(None, "continue my project work", None)
 
-        self.assertIn("Active speaker: Yogesh", context)
-        self.assertIn("Relationship to owner Yogesh: owner", context)
+        self.assertIn("Active speaker: the owner", context)
+        self.assertIn("Relationship to owner the owner: owner", context)
+        self.assertNotIn("Active speaker: Yogesh", context)
         self.assertIn("Closeness level: close", context)
         self.assertIn("personal assistant plus close companion", context)
+
+    def test_relationship_name_updates_are_memory_facts_not_static_replies(self):
+        text = "my mother name is usha rani"
+
+        self.assertFalse(_should_use_fast_local_reply(text))
+        self.assertEqual(_extract_relationship_name_fact(text), ("mother", "Usha Rani"))
+        self.assertTrue(
+            _should_skip_ai_memory_analysis(
+                text,
+                "Got it. I'll remember your mother's name is Usha Rani.",
+            )
+        )
 
     def test_emotional_state_detection_from_text(self):
         self.assertEqual(_detect_emotional_state("I am very tired today"), "tired")
@@ -305,6 +329,152 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertIn("@/lib/audioPlaybackGuard", chat_thread)
         self.assertNotIn("window.__akanshaAudioOwner", voice_hook)
         self.assertNotIn("window.__akanshaAudioOwner", chat_thread)
+
+    def test_chat_voice_flushes_pending_transcript_and_cleans_timers(self):
+        chat_thread = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatThread.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("submitVoiceTranscript(pendingTranscriptRef.current)", chat_thread)
+        self.assertIn("clearVoiceFinalFlushTimer();", chat_thread)
+        self.assertIn("clearTimeout(voiceRestartTimerRef.current)", chat_thread)
+        self.assertIn("now - previous.at < 2500", chat_thread)
+
+    def test_chat_voice_button_aborts_stale_recognition_and_handles_missing_mic(self):
+        chat_thread = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatThread.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("(activeRecognition as any)?.abort?.()", chat_thread)
+        self.assertIn("(previousRecognition as any).abort?.()", chat_thread)
+        self.assertIn("errorCode === 'audio-capture'", chat_thread)
+        self.assertIn("No microphone input was detected", chat_thread)
+
+    def test_chat_thread_uses_client_fast_lane_for_simple_replies(self):
+        chat_thread = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatThread.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("function fastLocalChatReply", chat_thread)
+        self.assertIn("const isQuickMode = chatWorkMode === 'quick'", chat_thread)
+        self.assertIn("const fastReply = isQuickMode && !hasAttachments ? fastLocalChatReply", chat_thread)
+        self.assertIn("persistPlannerSideMessage('user', content)", chat_thread)
+        self.assertIn("addAssistantMessage(fastReply, 'happy')", chat_thread)
+        self.assertIn("if (shouldSpeakReply) {", chat_thread)
+
+    def test_chat_composer_pastes_one_clipboard_image_only(self):
+        composer = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatComposer.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("stableFileSignature", composer)
+        self.assertIn("stableClipboardImageSignature", composer)
+        self.assertIn("seenClipboardImages", composer)
+        self.assertIn("e.stopPropagation()", composer)
+        self.assertIn("e.nativeEvent.stopImmediatePropagation()", composer)
+        self.assertIn('data-akansha-chat-composer="true"', composer)
+        self.assertIn("onPaste={handlePaste}", composer)
+        self.assertNotIn("window.addEventListener('paste'", composer)
+        self.assertNotIn('window.addEventListener("paste"', composer)
+
+    def test_sidebar_uses_client_navigation_without_full_reload(self):
+        sidebar = (PROJECT_ROOT / "src/components/Sidebar.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("import Link from 'next/link'", sidebar)
+        self.assertIn("<Link", sidebar)
+        self.assertIn("href={item.href}", sidebar)
+        self.assertIn("prefetch={false}", sidebar)
+        self.assertIn("reliableNavigate", sidebar)
+        self.assertIn("window.setTimeout", sidebar)
+        self.assertIn("window.location.href = href", sidebar)
+        self.assertIn('type="button"', sidebar)
+        self.assertNotIn("window.location.assign(href)", sidebar)
+        self.assertIn("event.preventDefault()", sidebar)
+
+    def test_sidebar_delete_is_optimistic_and_restores_on_failure(self):
+        sidebar = (PROJECT_ROOT / "src/components/Sidebar.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("const previousConversations = recentConversations", sidebar)
+        self.assertIn("setRecentConversations((items) => items.filter((item) => item.id !== conversation.id))", sidebar)
+        self.assertIn("setRecentConversations(previousConversations)", sidebar)
+        self.assertIn("event.preventDefault()", sidebar)
+
+    def test_layout_does_not_load_rocket_scripts_that_break_navigation(self):
+        layout = (PROJECT_ROOT / "src/app/layout.tsx").read_text(encoding="utf-8")
+
+        self.assertNotIn("static.rocket.new", layout)
+        self.assertNotIn("rocket-web.js", layout)
+        self.assertNotIn("rocket-shot.js", layout)
+
+    def test_chat_workspace_stats_callback_does_not_create_render_loop(self):
+        workspace = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatWorkspace.tsx"
+        ).read_text(encoding="utf-8")
+        thread = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatThread.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("const handleStatsChange = React.useCallback", workspace)
+        self.assertIn("previous.messages === messages && previous.contextUnits === contextUnits", workspace)
+        self.assertIn("onStatsChange={handleStatsChange}", workspace)
+        self.assertIn("lastReportedStatsRef", thread)
+        self.assertIn("lastReportedStatsRef.current.messages === messageCount", thread)
+        self.assertNotIn("onStatsChange={(messages, tokens) => setChatStats({ messages, tokens })}", workspace)
+
+    def test_image_provider_error_does_not_repeat_budget_copy(self):
+        chat_thread = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatThread.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("readImageForVision", chat_thread)
+        self.assertIn("canvas.toDataURL('image/jpeg', 0.82)", chat_thread)
+        self.assertIn("detailed image analysis did not return a usable result", chat_thread)
+        self.assertIn("lower.includes('budget')", chat_thread)
+        self.assertIn("lower.includes('insufficient')", chat_thread)
+        self.assertNotIn("Quick mode is active", chat_thread)
+        self.assertNotIn("reduced the output token limit", chat_thread)
+        self.assertNotIn("token or credit budget is too low", chat_thread)
+
+    def test_chat_renderer_hides_zero_artifacts_and_token_cost_copy(self):
+        message_bubble = (
+            PROJECT_ROOT / "src/app/chat-interface/components/MessageBubble.tsx"
+        ).read_text(encoding="utf-8")
+        chat_thread = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatThread.tsx"
+        ).read_text(encoding="utf-8")
+        topbar = (PROJECT_ROOT / "src/components/Topbar.tsx").read_text(encoding="utf-8")
+
+        self.assertNotIn("{message.tokenCount} tokens", message_bubble)
+        self.assertNotIn("{totalTokens.toLocaleString()} tokens", chat_thread)
+        self.assertNotIn("Token usage indicator", topbar)
+        self.assertNotIn("akansha-token-usage", topbar)
+        self.assertNotIn("akansha-token-usage", chat_thread)
+        self.assertIn("compact === '0'", chat_thread)
+        self.assertIn("filter((m: any) => !isBrokenAssistantHistoryMessage(m))", chat_thread)
+
+    def test_planner_delete_writes_through_to_local_storage(self):
+        planner = (
+            PROJECT_ROOT / "src/app/chat-interface/components/TaskCalendarPanel.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("writeStorage(TASKS_STORAGE_KEY, next)", planner)
+        self.assertIn("writeStorage(EVENTS_STORAGE_KEY, next)", planner)
+        self.assertIn("const next = previous.filter((item) => item.id !== task.id)", planner)
+        self.assertIn("const next = previous.filter((item) => item.id !== event.id)", planner)
+        self.assertIn("() => [...events].sort", planner)
+
+    def test_digital_twin_prompts_auto_route_without_manual_slash(self):
+        slash_commands = (PROJECT_ROOT / "src/lib/slashCommands.ts").read_text(encoding="utf-8")
+        composer = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatComposer.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("name: 'twin'", slash_commands)
+        self.assertIn("name: 'simulate'", slash_commands)
+        self.assertIn("name: 'goal'", slash_commands)
+        self.assertIn("autoRouteCognitivePrompt", slash_commands)
+        self.assertIn("Use Akansha Cognitive Digital Twin and Goal Engine routing", slash_commands)
+        self.assertIn("autoRouteCognitivePrompt(expandSlashCommand(content))", composer)
 
     def test_avatar_shader_disables_portrait_mouth_bulge(self):
         avatar_stage = (
@@ -530,14 +700,212 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertNotIn("Download PDF", cleaned)
         self.assertIn("Generated summary stays here.", cleaned)
 
-    def test_openrouter_auto_model_is_configurable(self):
+    def test_openrouter_model_uses_concrete_fast_default(self):
         ai_engine = (PROJECT_ROOT / "backend/ai_engine.py").read_text(encoding="utf-8")
         env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
-        self.assertIn('OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")', ai_engine)
+        self.assertIn('DEFAULT_OPENROUTER_MODEL = "google/gemini-2.0-flash-001"', ai_engine)
+        self.assertIn('configured.lower() in {"openrouter/auto", "auto", "/auto"}', ai_engine)
         self.assertIn("model=OPENROUTER_MODEL", ai_engine)
+        self.assertNotIn('OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")', ai_engine)
         self.assertNotIn('model="openai/gpt-4o-mini"', ai_engine)
-        self.assertIn("OPENROUTER_MODEL=openrouter/auto", env_example)
+        self.assertNotIn("OPENROUTER_MODEL=openrouter/auto", env_example)
+        self.assertIn("OPENROUTER_MODEL=google/gemini-2.0-flash-001", env_example)
+
+    def test_openrouter_client_loads_key_lazily_from_app_env(self):
+        ai_engine = (PROJECT_ROOT / "backend/ai_engine.py").read_text(encoding="utf-8")
+
+        self.assertIn('ENV_PATH = PROJECT_ROOT / ".env"', ai_engine)
+        self.assertIn("load_dotenv(ENV_PATH, override=True)", ai_engine)
+        self.assertIn("def _openrouter_client()", ai_engine)
+        self.assertIn("api_key=_openrouter_api_key()", ai_engine)
+        self.assertNotIn("client = OpenAI(", ai_engine)
+
+    def test_quick_chat_only_bypasses_model_for_direct_time_utilities(self):
+        dynamic_prompts = [
+            "hi",
+            "namaskar",
+            "how is the world going on",
+            "hows the world is going on",
+            "What's going on? Is all ok now",
+            "how are you?",
+            "ok now tell me joke",
+            "yes",
+            "aha aha",
+            "ohh",
+            "enti inka",
+            "what is the present dollar price",
+            "Nandamuri Taraka Rama Rao, date of birth",
+            "Nandamuritha Raka Ram Rao, date of birth",
+            "umma",
+            "u mma",
+            "aku paku",
+            "itit is the some thing else",
+            "completed well i am now in the vacation holidays cam to my home town anatapur",
+        ]
+
+        for prompt in dynamic_prompts:
+            self.assertFalse(_should_use_fast_local_reply(prompt), prompt)
+
+        self.assertTrue(_should_use_fast_local_reply("what's the present time"))
+        self.assertTrue(_should_use_fast_local_reply("present ist time"))
+        self.assertTrue(_should_use_fast_local_reply("what is exact london time"))
+        self.assertTrue(_should_skip_ai_memory_analysis("hi", "Hi Yogesh, I'm ready."))
+        self.assertTrue(_should_skip_ai_memory_analysis("ok now tell me joke", "One quick joke."))
+        self.assertTrue(_should_skip_ai_memory_analysis("what is the present dollar price", "Right now, 1 US dollar is about Rs. 83.00 INR."))
+        self.assertTrue(_should_skip_ai_memory_analysis("present ist time", "IST time is 3:00 PM."))
+        self.assertFalse(_should_use_fast_local_reply("what is the latest IPL score today"))
+        self.assertFalse(_should_use_fast_local_reply("generate a PDF report with 10 pages"))
+
+    def test_provider_failure_fallback_keeps_static_chat_out_of_quick_path(self):
+        with patch("backend.ai_engine._fetch_wikipedia_summary", return_value=(
+            "N. T. Rama Rao",
+            "N. T. Rama Rao was an Indian actor and politician.",
+            "https://en.wikipedia.org/wiki/N._T._Rama_Rao",
+        )), patch("backend.ai_engine._fetch_wikidata_birth_date", return_value="May 28, 1923"):
+            namaskar = _fast_local_reply_for_provider_failure("namaskar", "hindi")
+            joke = _fast_local_reply_for_provider_failure("ok now tell me joke", "english")
+            london = _fast_local_reply_for_provider_failure("what is exact london time", "english")
+            ist = _fast_local_reply_for_provider_failure("present ist time", "english")
+            correction = _fast_local_reply_for_provider_failure("itit is the some thing else", "english")
+            fragment = _fast_local_reply_for_provider_failure("aku paku", "english")
+            acknowledgement = _fast_local_reply_for_provider_failure("aha aha", "english")
+            ntr = _fast_local_reply_for_provider_failure("Nandamuri Taraka Rama Rao, date of birth", "english")
+            ntr_misspelled = _fast_local_reply_for_provider_failure("Nandamuritha Raka Ram Rao, date of birth", "english")
+
+        dynamic_fallbacks = namaskar + joke + correction + fragment + acknowledgement + ntr + ntr_misspelled
+        self.assertIn("May 28, 1923", dynamic_fallbacks)
+        self.assertNotIn("answer engine did not answer", dynamic_fallbacks.lower())
+        self.assertIn("London time is", london)
+        self.assertIn("IST time is", ist)
+        combined = dynamic_fallbacks + london + ist
+        self.assertNotIn("Quick mode is active", combined)
+        self.assertNotIn("I caught that, Yogesh", combined)
+        self.assertNotIn("Tell me what you want me to do with it", combined)
+        self.assertNotIn("token/credit", combined.lower())
+        self.assertNotIn("budget", combined.lower())
+
+    def test_numbered_json_attachment_is_answered_locally_without_provider(self):
+        data = [
+            {"id": 1, "question": "Warmup"},
+            {"question_number": 200, "question": "What is polymorphism in Java?", "topic": "OOP", "answer": "One interface, many implementations."},
+            {"id": 201, "question": "Inheritance"},
+        ]
+        answer = _local_attachment_question_answer(
+            "what is 200 question is about in the file",
+            [{"name": "a5.json", "type": "application/json", "text": json.dumps(data)}],
+        )
+
+        self.assertIsNotNone(answer)
+        self.assertIn("Question 200 in a5.json", answer or "")
+        self.assertIn("polymorphism", (answer or "").lower())
+        self.assertIn("OOP", answer or "")
+
+    def test_chat_response_limit_is_scaled_by_work_mode(self):
+        self.assertLessEqual(_response_token_limit("tell me one quick idea"), 180)
+        self.assertLessEqual(_response_token_limit("what is the latest cricket score today"), 220)
+        self.assertGreaterEqual(
+            _response_token_limit("what is the latest cricket score today", conversation_mode="research"),
+            800,
+        )
+        self.assertLessEqual(_response_token_limit("generate pdf report with tables"), 900)
+        self.assertGreaterEqual(
+            _response_token_limit("generate pdf report with tables", conversation_mode="research"),
+            1200,
+        )
+
+    def test_provider_capacity_failure_returns_safe_non_repeating_fallback(self):
+        fallback = _provider_failure_fallback(
+            "how is the world going on",
+            None,
+            RuntimeError("402 provider capacity refused"),
+            "english",
+        )
+
+        self.assertIn("world is mixed", fallback.lower())
+        self.assertNotIn("quick mode is active", fallback.lower())
+        self.assertNotIn("live reasoning path", fallback.lower())
+        self.assertNotIn("token/credit budget", fallback.lower())
+        self.assertNotIn("credit", fallback.lower())
+        self.assertNotIn("budget", fallback.lower())
+        self.assertNotIn("reduced the output token limit", fallback.lower())
+
+    def test_provider_capacity_failure_keeps_work_modes_separate(self):
+        fallback = _provider_failure_fallback(
+            "what is the latest IPL score today",
+            None,
+            RuntimeError("402 provider capacity refused"),
+            "english",
+        )
+
+        self.assertIn("could not verify", fallback.lower())
+        self.assertIn("Research/Agent/Skill", fallback)
+        self.assertNotIn("live reasoning path", fallback.lower())
+        self.assertNotIn("quick mode is active", fallback.lower())
+        self.assertNotIn("token/credit budget", fallback.lower())
+        self.assertNotIn("credit", fallback.lower())
+        self.assertNotIn("budget", fallback.lower())
+        self.assertNotIn("reduced the output token limit", fallback.lower())
+
+    def test_provider_image_failure_is_graceful_without_false_pixel_analysis(self):
+        fallback = _provider_failure_fallback(
+            "analyze the image",
+            [{"type": "image/png", "name": "screenshot.png"}],
+            RuntimeError("402 provider capacity refused"),
+            "english",
+        )
+
+        self.assertIn("received the image", fallback)
+        self.assertIn("without guessing", fallback)
+        self.assertNotIn("token/credit budget", fallback.lower())
+        self.assertNotIn("credit", fallback.lower())
+        self.assertNotIn("budget", fallback.lower())
+
+    def test_provider_image_failure_uses_local_pixel_pass_when_data_url_exists(self):
+        transparent_png = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        )
+        fallback = _provider_failure_fallback(
+            "analyze the image",
+            [{"type": "image/png", "name": "screenshot.png", "data_url": transparent_png, "size": 68}],
+            RuntimeError("402 provider capacity refused"),
+            "english",
+        )
+
+        self.assertIn("local pixel pass", fallback)
+        self.assertIn("screenshot.png", fallback)
+        self.assertIn("1x1px", fallback)
+        self.assertNotIn("token/credit budget", fallback.lower())
+        self.assertNotIn("credit", fallback.lower())
+        self.assertNotIn("budget", fallback.lower())
+
+    def test_background_memory_analysis_has_bounded_length_and_clean_errors(self):
+        ai_engine = (PROJECT_ROOT / "backend/ai_engine.py").read_text(encoding="utf-8")
+
+        self.assertIn("max_tokens=220", ai_engine)
+        self.assertIn("Analysis skipped: provider unavailable for background memory extraction.", ai_engine)
+        self.assertNotIn("Analysis failed:", ai_engine)
+        self.assertNotIn("8192", ai_engine)
+
+    def test_chat_work_modes_are_explicitly_routed(self):
+        chat_thread = (
+            PROJECT_ROOT / "src/app/chat-interface/components/ChatThread.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CHAT_WORK_MODES", chat_thread)
+        self.assertIn("label: 'Quick'", chat_thread)
+        self.assertIn("label: 'Research'", chat_thread)
+        self.assertIn("label: 'Agent'", chat_thread)
+        self.assertIn("label: 'Skill'", chat_thread)
+        self.assertIn("chatWorkMode === 'quick'", chat_thread)
+        self.assertIn("conversation_mode: shouldSpeakReply ? 'voice' : chatWorkMode", chat_thread)
+
+    def test_empty_or_spurious_zero_chat_response_is_rejected(self):
+        self.assertTrue(is_broken_assistant_response("hello", ""))
+        self.assertTrue(is_broken_assistant_response("hello", "0"))
+        self.assertFalse(is_broken_assistant_response("what is zero plus zero", "0"))
+        self.assertFalse(is_broken_assistant_response("hello", "Hi Yogesh"))
 
     def test_java_pdf_prompt_generates_requested_pages_and_complete_code(self):
         prompt = (

@@ -238,7 +238,7 @@ export function ChannelIntegrationsView() {
         messages: data.messages ?? [],
       });
     } catch (error) {
-      console.error('Failed to load social inbox:', error);
+      console.warn('Failed to load social inbox:', error);
       setSocialInbox(SOCIAL_INBOX_FALLBACK);
     } finally {
       setSocialLoading(false);
@@ -294,7 +294,7 @@ export function ChannelIntegrationsView() {
         setSetupValues((previous) => ({ ...previous, [platform]: {} }));
         await loadSocialInbox();
       } catch (error) {
-        console.error(`Failed to configure ${platform}:`, error);
+        console.warn(`Failed to configure ${platform}:`, error);
         toast.error(error instanceof Error ? error.message : `Could not configure ${platform}`);
       } finally {
         setBusyPlatform(null);
@@ -315,7 +315,7 @@ export function ChannelIntegrationsView() {
         toast.success(`${data.status.label} verified`);
         await loadSocialInbox();
       } catch (error) {
-        console.error(`Failed to test ${platform}:`, error);
+        console.warn(`Failed to test ${platform}:`, error);
         toast.error(error instanceof Error ? error.message : `Could not test ${platform}`);
       } finally {
         setBusyPlatform(null);
@@ -332,7 +332,7 @@ export function ChannelIntegrationsView() {
         toast.success(`${platform} disconnected`);
         await loadSocialInbox();
       } catch (error) {
-        console.error(`Failed to disconnect ${platform}:`, error);
+        console.warn(`Failed to disconnect ${platform}:`, error);
         toast.error(`Could not disconnect ${platform}`);
       } finally {
         setBusyPlatform(null);
@@ -370,7 +370,7 @@ export function ChannelIntegrationsView() {
         toast.success(data.status === 'sent' ? `Reply sent to ${message.sender}` : `Reply queued for ${message.sender}`);
         await loadSocialInbox();
       } catch (error) {
-        console.error('Failed to send approved reply:', error);
+        console.warn('Failed to send approved reply:', error);
         toast.error(error instanceof Error ? error.message : 'Reply could not be sent');
       } finally {
         setSendingReplyId(null);

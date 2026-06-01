@@ -2,28 +2,72 @@ import os
 import json
 import re
 import html
+import io
 import base64
+import hashlib
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python builds without tzdata still keep IST available.
+    ZoneInfo = None
 from openai import OpenAI
 from sqlalchemy.orm import Session
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from .database import Memory, ChatMessage, Task
 
-load_dotenv(override=True)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ENV_PATH = PROJECT_ROOT / ".env"
+load_dotenv(ENV_PATH, override=True)
 
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto").strip() or "openrouter/auto"
+DEFAULT_OPENROUTER_MODEL = "google/gemini-2.0-flash-001"
+DEFAULT_OWNER_NAME = (os.getenv("AKANSHA_OWNER_NAME") or "the owner").strip() or "the owner"
+_CURRENCY_RATE_CACHE: dict[str, tuple[datetime, float, str]] = {}
+_REPLY_ROTATION_INDEX = 0
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    default_headers={
-        "HTTP-Referer": "http://localhost:8000",
-        "X-Title": "Akansha AI Assistant",
-    }
-)
+
+def _configured_openrouter_model() -> str:
+    """Use a concrete fast model; avoid OpenRouter auto-routing stalls."""
+    configured = os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL).strip()
+    if not configured or configured.lower() in {"openrouter/auto", "auto", "/auto"}:
+        return DEFAULT_OPENROUTER_MODEL
+    return configured
+
+
+OPENROUTER_MODEL = _configured_openrouter_model()
+
+class OpenRouterConfigurationError(RuntimeError):
+    """Raised when the configured OpenRouter provider cannot authenticate."""
+
+
+def _openrouter_api_key() -> str:
+    load_dotenv(ENV_PATH, override=True)
+    key = (
+        os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("\ufeffOPENROUTER_API_KEY")
+        or ""
+    ).strip().strip('"').strip("'")
+    if not key and ENV_PATH.exists():
+        key = (dotenv_values(ENV_PATH, encoding="utf-8-sig").get("OPENROUTER_API_KEY") or "").strip().strip('"').strip("'")
+    if not key or key in {"your_key", "your_openrouter_key"}:
+        raise OpenRouterConfigurationError(
+            "OpenRouter is not configured. Add OPENROUTER_API_KEY to C:\\MY-AI\\aura\\.env and restart the backend."
+        )
+    return key
+
+
+def _openrouter_client() -> OpenAI:
+    return OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=_openrouter_api_key(),
+        default_headers={
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "Akansha AI Assistant",
+        },
+    )
 
 SYSTEM_PROMPT = """
 You are Akansha, an advanced personal AI.
@@ -54,6 +98,622 @@ Personality:
 
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 
+DIRECT_TIME_DATE_PATTERN = re.compile(
+    r"^\s*(?:what(?:'s| is)?|tell me|show me|give me|exact|current|present)?\s*"
+    r"(?:the\s+)?(?:exact\s+|current\s+|present\s+)?"
+    r"(?:(?:ist|india|london|uk|britain|england)\s+)?"
+    r"(?:time|date|day|today(?:'s)? date|today(?:'s)? day|now)"
+    r"(?:\s+(?:in\s+)?(?:ist|india|london|uk|britain|england))?\s*[?.!]*\s*$",
+    re.IGNORECASE,
+)
+
+TIME_ZONE_ALIASES = (
+    ("london", "Europe/London", "London"),
+    ("uk", "Europe/London", "London"),
+    ("britain", "Europe/London", "London"),
+    ("england", "Europe/London", "London"),
+    ("india", "Asia/Kolkata", "IST"),
+    ("ist", "Asia/Kolkata", "IST"),
+)
+
+RELATIONSHIP_NAME_PATTERN = re.compile(
+    r"\b(?:my\s+)?"
+    r"(?P<relation>mother|mom|mummy|amma|father|dad|nanna|brother|sister|friend|professor|teacher|mentor)"
+    r"(?:'s)?\s+(?:name\s+is|is|called)\s+"
+    r"(?P<name>[a-z][a-z .'-]{1,80})",
+    re.IGNORECASE,
+)
+
+RELATIONSHIP_ALIASES = {
+    "mom": "mother",
+    "mummy": "mother",
+    "amma": "mother",
+    "dad": "father",
+    "nanna": "father",
+    "teacher": "professor",
+}
+
+
+def _compact_text(text: str) -> str:
+    return " ".join((text or "").strip().split())
+
+
+def _title_person_name(name: str) -> str:
+    cleaned = re.split(r"\b(?:and|but|so|okay|ok|please|thanks)\b", name, maxsplit=1, flags=re.IGNORECASE)[0]
+    cleaned = re.sub(r"[^a-zA-Z .'-]", "", cleaned).strip(" .'-")
+    return " ".join(part.capitalize() for part in cleaned.split())
+
+
+def _extract_relationship_name_fact(text: str) -> tuple[str, str] | None:
+    cleaned = _compact_text(text)
+    match = RELATIONSHIP_NAME_PATTERN.search(cleaned)
+    if not match:
+        return None
+
+    relation = RELATIONSHIP_ALIASES.get(match.group("relation").lower(), match.group("relation").lower())
+    name = _title_person_name(match.group("name"))
+    if len(name.split()) > 5 or len(name) < 2:
+        return None
+    return relation, name
+
+
+def _extract_self_intro_fact(text: str) -> str | None:
+    cleaned = _compact_text(text)
+    if not cleaned or len(cleaned) > 120:
+        return None
+    match = re.match(
+        r"^(?:i\s+am|i'm|im|my\s+name\s+is|this\s+is)\s+([A-Za-z][A-Za-z .'-]{1,80})[.!?]*$",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    name = _title_person_name(match.group(1))
+    if len(name) < 2 or len(name.split()) > 7:
+        return None
+    return name
+
+
+def _is_direct_time_or_date_query(text: str) -> bool:
+    cleaned = _compact_text(text)
+    if not cleaned or len(cleaned) > 90:
+        return False
+    lowered = cleaned.lower()
+    if re.search(r"\b(price|score|news|weather|match|stock|crypto|website|web|internet|search)\b", lowered):
+        return False
+    return bool(DIRECT_TIME_DATE_PATTERN.match(cleaned))
+
+
+def _time_zone_for_query(text: str) -> tuple[str, timezone | object, str]:
+    lowered = text.lower()
+    for alias, zone_name, label in TIME_ZONE_ALIASES:
+        if re.search(rf"\b{re.escape(alias)}\b", lowered):
+            if zone_name == "Asia/Kolkata" or ZoneInfo is None:
+                return label, IST, zone_name
+            try:
+                return label, ZoneInfo(zone_name), zone_name
+            except Exception:
+                return label, IST, "Asia/Kolkata"
+    return "IST", IST, "Asia/Kolkata"
+
+
+def _format_local_datetime_for_reply(current: datetime) -> tuple[str, str]:
+    date_format = "%A, %B %-d, %Y"
+    time_format = "%-I:%M %p"
+    if os.name == "nt":
+        date_format = "%A, %B %#d, %Y"
+        time_format = "%#I:%M %p"
+    return current.strftime(date_format), current.strftime(time_format)
+
+
+def _should_use_local_utility_reply(user_input: str, attachments: list[dict] | None = None) -> bool:
+    """Only bypass the model for deterministic utilities.
+
+    Normal conversation must stay model-driven. Keeping greetings, jokes,
+    fragments, identities, and live-fact questions out of this path prevents
+    the repeated canned replies that were degrading the chat experience.
+    """
+    if attachments:
+        return False
+    cleaned = _compact_text(user_input)
+    if not cleaned:
+        return False
+    return _is_direct_time_or_date_query(cleaned)
+
+
+def _should_use_fast_local_reply(user_input: str, attachments: list[dict] | None = None) -> bool:
+    """Backward-compatible name for tests/imports; no longer a chat shortcut."""
+    return _should_use_local_utility_reply(user_input, attachments)
+
+
+def _fast_local_reply(db: Session, user_input: str, language_preference: str | None = None) -> str | None:
+    cleaned = _compact_text(user_input)
+    lowered = cleaned.lower()
+    preference = (language_preference or "").lower()
+
+    if _is_direct_time_or_date_query(cleaned):
+        zone_label, tzinfo, _zone_name = _time_zone_for_query(cleaned)
+        now = datetime.now(tzinfo)
+        date_text, time_text = _format_local_datetime_for_reply(now)
+        wants_date = bool(re.search(r"\b(date|day|today)\b", lowered))
+        if "hindi" in preference:
+            if wants_date and "time" not in lowered:
+                return f"Aaj {date_text} hai, {zone_label} ke according."
+            return f"Abhi {time_text} {zone_label} hai, {date_text}."
+        if "telugu" in preference:
+            if wants_date and "time" not in lowered:
+                return f"Ivvala {date_text}, {zone_label} prakaram."
+            return f"Ippudu {time_text} {zone_label}, {date_text}."
+        if wants_date and "time" not in lowered:
+            return f"Today is {date_text} in {zone_label}."
+        return f"{zone_label} time is {time_text} on {date_text}."
+
+    return None
+
+
+class _NoopDb:
+    def commit(self):
+        return None
+
+    def query(self, *_args, **_kwargs):
+        raise RuntimeError("No database access is needed for this fallback")
+
+
+def _stable_choice(seed: str, options: list[str]) -> str:
+    if not options:
+        return ""
+    digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()
+    return options[int(digest[:8], 16) % len(options)]
+
+
+def _rotating_choice(options: list[str]) -> str:
+    global _REPLY_ROTATION_INDEX
+    if not options:
+        return ""
+    _REPLY_ROTATION_INDEX = (_REPLY_ROTATION_INDEX + 1) % 10_000
+    return options[_REPLY_ROTATION_INDEX % len(options)]
+
+
+def _speaker_display_name(speaker_profile: dict | None = None) -> str:
+    if not isinstance(speaker_profile, dict):
+        return ""
+    name = str(speaker_profile.get("name") or speaker_profile.get("speaker_name") or "").strip()
+    if not name or name.lower() in {"unknown", "user", "owner"}:
+        return ""
+    return _title_person_name(name)
+
+
+def _is_brief_greeting(text: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?:hi+|h+i+|hello+|hey+|hoi+|yo+|namaste|namaskar|vanakkam|salaam|good\s+(?:morning|afternoon|evening|night))",
+            text.strip(),
+            re.IGNORECASE,
+        )
+    )
+
+
+def _is_brief_ack_or_fragment(text: str) -> bool:
+    cleaned = _compact_text(text)
+    if not cleaned or len(cleaned) > 80:
+        return False
+    if re.search(
+        r"\b(?:i\s+am|i'm|im|my\s+name\s+is|this\s+is|called|date\s+of\s+birth|dob|born|birth\s+date)\b",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        return False
+    if re.fullmatch(
+        r"(?:yes|yeah|yep|ya|ok|okay|okk|sure|sare|ha|haan|haa|avunu|aithe|aha(?:\s+aha)?|oh+|ohh+|hmm+|mm+|umma|u\s*mma|aku\s*paku|enti(?:\s+inka)?)",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        return True
+    words = cleaned.split()
+    return len(words) <= 3 and not re.search(r"[?]", cleaned) and not re.search(
+        r"\b(?:what|who|when|where|why|how|tell|give|show|create|generate|open|send|price|rate|time|date|birth|score|news|analy[sz]e|explain|write|make|delete|update|question|file|image|video|audio|pdf|excel|ppt|json|csv)\b",
+        cleaned,
+        re.IGNORECASE,
+    )
+
+
+def _wants_joke(text: str) -> bool:
+    return bool(re.search(r"\b(joke|funny|make me laugh|navvu|hasao|hasi)\b", text, re.IGNORECASE))
+
+
+def _quick_greeting_reply(text: str, language_preference: str, speaker_profile: dict | None = None) -> str:
+    preference = language_preference.lower()
+    name = _speaker_display_name(speaker_profile)
+    suffix = f" {name}" if name else ""
+    if "hindi" in preference:
+        return _stable_choice(
+            text + language_preference + name,
+            [
+                f"Namaste{suffix}. Main ready hoon, bolo kya karna hai?",
+                f"Haan{suffix}, sun raha hoon. Next kaam bhejo.",
+                f"Hi{suffix}, main yahin hoon. Kya handle karein?",
+            ],
+        )
+    if "telugu" in preference:
+        return _stable_choice(
+            text + language_preference + name,
+            [
+                f"Hi{suffix}, ready ga unna. Em cheddam?",
+                f"Cheppu{suffix}, vinthunnanu. Next task enti?",
+                f"Namaskaram{suffix}. Nenu ready, em kavali?",
+            ],
+        )
+    return _stable_choice(
+        text + language_preference + name,
+        [
+            f"Hi{suffix}, I'm ready. What should we handle next?",
+            f"Hey{suffix}, I'm here. Send the next thing.",
+            f"Hello{suffix}. I'm listening, what do you want to do?",
+        ],
+    )
+
+
+def _quick_fragment_reply(text: str, language_preference: str, speaker_profile: dict | None = None) -> str:
+    preference = language_preference.lower()
+    name = _speaker_display_name(speaker_profile)
+    suffix = f" {name}" if name else ""
+    if "hindi" in preference:
+        return _rotating_choice(
+            [
+                f"Haan{suffix}, samjha. Ab exact kaam ya question bhejo.",
+                f"Theek hai{suffix}, main ready hoon. One line mein batao kya karna hai.",
+                f"Okay{suffix}, continue karo. Main context pakad raha hoon.",
+            ],
+        )
+    if "telugu" in preference:
+        return _rotating_choice(
+            [
+                f"Sare{suffix}, ardham ayyindi. Ippudu exact ga em cheyyalo cheppu.",
+                f"Okay{suffix}, vinthunnanu. One line lo task cheppu.",
+                f"Ha{suffix}, continue cheyyi. Nenu context hold chesthunnanu.",
+            ],
+        )
+    return _rotating_choice(
+        [
+            f"Got it{suffix}. Send the actual question or task when you're ready.",
+            f"Okay{suffix}, I'm with you. What should I do next?",
+            f"I'm listening{suffix}. Give me the next clear instruction.",
+        ],
+    )
+
+
+def _quick_self_intro_reply(name: str, language_preference: str) -> str:
+    preference = language_preference.lower()
+    if "hindi" in preference:
+        return _rotating_choice(
+            [
+                f"Samajh gaya, {name}. Main is naam ko is chat ke context mein use karunga.",
+                f"Noted, {name}. Ab batao, main kya help karun?",
+                f"Okay {name}, context update ho gaya. Next kya karna hai?",
+            ],
+        )
+    if "telugu" in preference:
+        return _rotating_choice(
+            [
+                f"Ardham ayyindi, {name}. Ee chat lo aa peru use chestha.",
+                f"Noted, {name}. Ippudu em help kavali?",
+                f"Okay {name}, context update ayyindi. Next em cheddam?",
+            ],
+        )
+    return _rotating_choice(
+        [
+            f"Got it, {name}. I’ll use that name in this chat context.",
+            f"Noted, {name}. What should we handle next?",
+            f"Okay {name}, I updated the conversation context. What do you want to do now?",
+        ],
+    )
+
+
+def _fallback_joke_reply(text: str, language_preference: str) -> str:
+    preference = language_preference.lower()
+    if "hindi" in preference:
+        return _rotating_choice(
+            [
+                "Ek quick joke: Programmer ne chai kyun banayi? Kyunki code ko thoda Java chahiye tha.",
+                "Teacher: homework kahan hai? Student: Cloud mein hai sir, bas sync pending hai.",
+                "Laptop bola: mujhe rest chahiye. Windows bola: pehle 47 updates complete karo.",
+                "Math book udaas thi, kyunki uske paas bahut problems thi.",
+                "Wi-Fi shy tha: connection public, feelings private.",
+            ],
+        )
+    if "telugu" in preference:
+        return _rotating_choice(
+            [
+                "Oka quick joke: Laptop sleep ki vellalante Windows annadi, first 47 updates complete chey.",
+                "Programmer chai enduku tagadu? Code ki konchem Java kavali kabatti.",
+                "Math book enduku sad ga undi? Dantlo problems ekkuva.",
+                "Wi-Fi enduku shy ga undi? Connection public, feelings private kabatti.",
+                "Teacher: homework ekkada? Student: cloud lo undi sir, sync avvaledu.",
+            ],
+        )
+    return _rotating_choice(
+        [
+            "Quick joke: My laptop asked for a break. Windows replied, 'Sure, after 47 updates.'",
+            "Tiny joke: Why did the programmer make tea? The code needed a little Java.",
+            "One quick one: The math book looked stressed because it had too many problems.",
+            "Quick joke: Why was the keyboard calm? It had everything under control.",
+            "Tiny joke: I told my browser to stop tracking me. It opened another tab to discuss it.",
+        ],
+    )
+
+
+def _currency_code_from_text(text: str) -> tuple[str, str] | None:
+    lowered = text.lower()
+    currency_aliases = {
+        "usd": ("USD", "US dollar"),
+        "us dollar": ("USD", "US dollar"),
+        "dollar": ("USD", "US dollar"),
+        "eur": ("EUR", "euro"),
+        "euro": ("EUR", "euro"),
+        "gbp": ("GBP", "British pound"),
+        "pound": ("GBP", "British pound"),
+        "aed": ("AED", "UAE dirham"),
+        "dirham": ("AED", "UAE dirham"),
+    }
+    if not re.search(r"\b(price|rate|value|inr|rupee|rupees|currency|exchange)\b", lowered):
+        return None
+    for alias, value in currency_aliases.items():
+        if re.search(rf"\b{re.escape(alias)}s?\b", lowered):
+            return value
+    return None
+
+
+def _fetch_currency_to_inr(code: str) -> tuple[float, str] | None:
+    cache_key = f"{code}_INR"
+    now = _now_ist()
+    cached = _CURRENCY_RATE_CACHE.get(cache_key)
+    if cached and now - cached[0] < timedelta(minutes=10):
+        return cached[1], cached[2]
+
+    sources = (
+        (f"https://open.er-api.com/v6/latest/{urllib.parse.quote(code)}", "open.er-api.com"),
+        (f"https://api.exchangerate.host/latest?base={urllib.parse.quote(code)}&symbols=INR", "exchangerate.host"),
+    )
+    for source_url, source_name in sources:
+        try:
+            payload = json.loads(_read_url(source_url, timeout=3))
+            rate = float((payload.get("rates") or {}).get("INR") or 0)
+            if rate > 0:
+                _CURRENCY_RATE_CACHE[cache_key] = (now, rate, source_name)
+                return rate, source_name
+        except Exception:
+            continue
+    return None
+
+
+def _quick_currency_reply(text: str, language_preference: str) -> str | None:
+    detected = _currency_code_from_text(text)
+    if not detected:
+        return None
+    code, label = detected
+    fetched = _fetch_currency_to_inr(code)
+    timestamp = _format_ist_datetime()
+    preference = language_preference.lower()
+    if not fetched:
+        if "hindi" in preference:
+            return f"{label} to INR ka live rate is turn mein verify nahi ho paaya. Main guess nahi karunga."
+        if "telugu" in preference:
+            return f"{label} to INR live rate ee turn lo verify avvaledu. Guess cheyyanu."
+        return f"I could not verify the live {label} to INR rate in this turn, so I will not guess."
+    rate, source = fetched
+    if "hindi" in preference:
+        return f"Abhi 1 {label} lagbhag Rs. {rate:.2f} INR hai. Source: {source}. Fetched at {timestamp}."
+    if "telugu" in preference:
+        return f"Ippudu 1 {label} approx Rs. {rate:.2f} INR. Source: {source}. Fetched at {timestamp}."
+    return f"Right now, 1 {label} is about Rs. {rate:.2f} INR. Source: {source}. Fetched at {timestamp}."
+
+
+def _extract_birth_subject(text: str) -> str | None:
+    cleaned = _compact_text(text)
+    if not re.search(r"\b(date\s+of\s+birth|dob|born|birth\s+date)\b", cleaned, re.IGNORECASE):
+        return None
+    subject = re.split(r"\b(?:date\s+of\s+birth|dob|born|birth\s+date)\b", cleaned, maxsplit=1, flags=re.IGNORECASE)[0]
+    subject = re.sub(r"^(?:what\s+is|tell\s+me|give\s+me|show\s+me|who\s+is|about)\s+", "", subject, flags=re.IGNORECASE)
+    subject = re.sub(r"[^A-Za-z0-9 .'-]", " ", subject)
+    subject = _compact_text(subject).strip(" .'-")
+    if 2 <= len(subject) <= 90:
+        return subject
+    return None
+
+
+def _fetch_wikipedia_summary(query: str) -> tuple[str, str, str] | None:
+    try:
+        search_url = (
+            "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&utf8=1&srlimit=1&srsearch="
+            + urllib.parse.quote(query)
+        )
+        search_payload = json.loads(_read_url(search_url, timeout=4))
+        results = ((search_payload.get("query") or {}).get("search") or [])
+        if not results:
+            return None
+        title = str(results[0].get("title") or "").strip()
+        if not title:
+            return None
+        summary_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title.replace(" ", "_"))
+        summary_payload = json.loads(_read_url(summary_url, timeout=4))
+        extract = str(summary_payload.get("extract") or "").strip()
+        page_url = str(((summary_payload.get("content_urls") or {}).get("desktop") or {}).get("page") or "")
+        if extract:
+            sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", extract) if item.strip()]
+            birth_sentence = next(
+                (
+                    item
+                    for item in sentences[:4]
+                    if re.search(r"\b(?:born|birth|date of birth)\b|\(\s*\d{1,2}\s+[A-Z][a-z]+\s+\d{4}", item)
+                ),
+                "",
+            )
+            summary_sentence = birth_sentence or (sentences[0] if sentences else extract[:400])
+            return title, summary_sentence, page_url or f"https://en.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}"
+    except Exception:
+        return None
+    return None
+
+
+def _fetch_wikidata_birth_date(title: str) -> str | None:
+    try:
+        pageprops_url = (
+            "https://en.wikipedia.org/w/api.php?action=query&prop=pageprops&format=json&titles="
+            + urllib.parse.quote(title)
+        )
+        pageprops_payload = json.loads(_read_url(pageprops_url, timeout=4))
+        pages = (pageprops_payload.get("query") or {}).get("pages") or {}
+        entity_id = ""
+        for page in pages.values():
+            entity_id = str(((page or {}).get("pageprops") or {}).get("wikibase_item") or "")
+            if entity_id:
+                break
+        if not entity_id:
+            return None
+
+        entity_url = (
+            "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=claims&ids="
+            + urllib.parse.quote(entity_id)
+        )
+        entity_payload = json.loads(_read_url(entity_url, timeout=4))
+        claims = (((entity_payload.get("entities") or {}).get(entity_id) or {}).get("claims") or {})
+        birth_claims = claims.get("P569") or []
+        if not birth_claims:
+            return None
+        time_value = (
+            (((birth_claims[0].get("mainsnak") or {}).get("datavalue") or {}).get("value") or {}).get("time")
+            or ""
+        )
+        match = re.match(r"^[+-](\d{4})-(\d{2})-(\d{2})T", time_value)
+        if not match:
+            return None
+        year, month, day = map(int, match.groups())
+        return datetime(year, month, day, tzinfo=IST).strftime("%B %-d, %Y") if os.name != "nt" else datetime(year, month, day, tzinfo=IST).strftime("%B %#d, %Y")
+    except Exception:
+        return None
+
+
+def _quick_birth_reply(text: str, language_preference: str) -> str | None:
+    subject = _extract_birth_subject(text)
+    if not subject:
+        return None
+    result = _fetch_wikipedia_summary(subject)
+    if not result:
+        return None
+    title, sentence, page_url = result
+    birth_date = _fetch_wikidata_birth_date(title)
+    preference = language_preference.lower()
+    if birth_date:
+        if "hindi" in preference:
+            return f"{title} ka date of birth {birth_date} hai. Source: Wikidata/Wikipedia ({page_url})."
+        if "telugu" in preference:
+            return f"{title} date of birth {birth_date}. Source: Wikidata/Wikipedia ({page_url})."
+        return f"{title}'s date of birth is {birth_date}. Source: Wikidata/Wikipedia ({page_url})."
+    if "hindi" in preference:
+        return f"{title} ke baare mein verified source se: {sentence} Source: Wikipedia ({page_url})."
+    if "telugu" in preference:
+        return f"{title} gurinchi source-backed info: {sentence} Source: Wikipedia ({page_url})."
+    return f"{title}: {sentence} Source: Wikipedia ({page_url})."
+
+
+def _quick_world_status_reply(text: str, language_preference: str) -> str:
+    preference = language_preference.lower()
+    if "hindi" in preference:
+        return "Short answer: world mixed hai. Tech fast move ho raha hai, markets aur politics volatile hain, aur climate/energy pressure serious hai. Agar tum news chahte ho, Research mode mein latest source-backed update de sakta hoon."
+    if "telugu" in preference:
+        return "Short ga cheppalante: world mixed ga undi. Tech speed ga move avuthondi, politics/markets volatile ga unnayi, climate pressure serious. Latest news kavali ante Research mode lo source-backed update istanu."
+    return "Short answer: the world is mixed right now. Tech is moving fast, politics and markets are volatile, and climate/energy pressure is serious. For latest news, use Research mode so I can verify live sources."
+
+
+def _quick_local_response(
+    db: Session,
+    user_input: str,
+    language_preference: str | None = None,
+    speaker_profile: dict | None = None,
+    allow_conversation_fragments: bool = False,
+) -> str | None:
+    cleaned = _compact_text(user_input)
+    if not cleaned:
+        return None
+    preference = language_preference or "english"
+
+    relation_fact = _extract_relationship_name_fact(cleaned)
+    if relation_fact:
+        relation, name = relation_fact
+        try:
+            _upsert_memory(db, f"{relation}_name", f"The user's {relation} name is {name}.", importance=4)
+        except Exception:
+            pass
+        if "hindi" in preference.lower():
+            return f"Samajh gaya. Tumhari {relation} ka naam {name} hai; main ise yaad rakhunga."
+        if "telugu" in preference.lower():
+            return f"Ardham ayyindi. Mee {relation} peru {name}; nenu gurthu pettukunta."
+        return f"Got it. Your {relation}'s name is {name}; I'll remember that."
+
+    self_intro = _extract_self_intro_fact(cleaned)
+    if self_intro:
+        try:
+            _upsert_memory(db, "Current speaker name", f"The current speaker introduced themselves as {self_intro}.", importance=4)
+        except Exception:
+            pass
+        return _quick_self_intro_reply(self_intro, preference)
+
+    if _is_brief_greeting(cleaned):
+        return _quick_greeting_reply(cleaned, preference, speaker_profile)
+
+    if _wants_joke(cleaned):
+        return _fallback_joke_reply(cleaned, preference)
+
+    currency = _quick_currency_reply(cleaned, preference)
+    if currency:
+        return currency
+
+    birth = _quick_birth_reply(cleaned, preference)
+    if birth:
+        return birth
+
+    if re.search(r"\b(how'?s|how is|what'?s|what is).{0,30}\b(world|going on|all ok|everything ok)\b", cleaned, re.IGNORECASE):
+        return _quick_world_status_reply(cleaned, preference)
+
+    if allow_conversation_fragments and _is_brief_ack_or_fragment(cleaned):
+        return _quick_fragment_reply(cleaned, preference, speaker_profile)
+
+    return None
+
+
+def _is_local_quick_answer_query(user_input: str, attachments: list[dict] | None = None) -> bool:
+    if attachments:
+        return False
+    cleaned = _compact_text(user_input)
+    if not cleaned:
+        return False
+    return bool(
+        _is_direct_time_or_date_query(cleaned)
+        or _extract_relationship_name_fact(cleaned)
+        or _extract_self_intro_fact(cleaned)
+        or _is_brief_greeting(cleaned)
+        or _is_brief_ack_or_fragment(cleaned)
+        or _wants_joke(cleaned)
+        or _currency_code_from_text(cleaned)
+        or _extract_birth_subject(cleaned)
+        or re.search(r"\b(how'?s|how is|what'?s|what is).{0,30}\b(world|going on|all ok|everything ok)\b", cleaned, re.IGNORECASE)
+    )
+
+
+def _should_skip_ai_memory_analysis(user_input: str, assistant_response: str) -> bool:
+    if _is_local_quick_answer_query(user_input):
+        return True
+    if _extract_relationship_name_fact(user_input):
+        return True
+    if re.search(
+        r"\b(model connection|provider key|model provider|not authenticated|not available right now|"
+        r"vision model is unavailable|active model provider is unavailable)\b",
+        assistant_response or "",
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
 
 def _normalize_user_fact(text: str) -> str:
     cleaned = " ".join(text.strip().split())
@@ -77,6 +737,25 @@ def _upsert_memory(db: Session, topic: str, insight: str, importance: int = 3):
 def _capture_deterministic_memories(db: Session, user_input: str):
     lowered = user_input.lower()
     compact = _normalize_user_fact(user_input)
+
+    relationship_fact = _extract_relationship_name_fact(user_input)
+    if relationship_fact:
+        relation, name = relationship_fact
+        _upsert_memory(
+            db,
+            f"Relationship: {relation}",
+            f"User's {relation} is {name}.",
+            importance=5,
+        )
+
+    self_intro = _extract_self_intro_fact(user_input)
+    if self_intro:
+        _upsert_memory(
+            db,
+            "Current speaker name",
+            f"The current speaker introduced themselves as {self_intro}.",
+            importance=4,
+        )
 
     if (
         "exam" in lowered
@@ -188,6 +867,7 @@ TELUGU_ROMAN_HINTS = {
 
 HINDI_ROMAN_HINTS = {
     "namaste",
+    "namaskar",
     "hindi",
     "kaise",
     "kaisa",
@@ -253,8 +933,8 @@ RELATIONSHIP_STYLES = {
     "owner": {
         "tone": "intelligent, proactive, supportive, emotionally close, and concise when action is needed",
         "behavior": (
-            "Act like Yogesh's personal assistant plus close companion. Remember ongoing work, suggest next steps, "
-            "protect his time, and use direct helpful language."
+            "Act like {owner_name}'s personal assistant plus close companion. Remember ongoing work, suggest next steps, "
+            "protect their time, and use direct helpful language."
         ),
         "boundaries": "Full access to memory and protected automation when the request is safe.",
         "voice": "confident, warm, quick, and natural Indian companion tone",
@@ -339,6 +1019,15 @@ def _normalize_relationship(value: str | None) -> str:
     if normalized in {"brother", "sister", "cousin", "uncle", "aunt", "aunty"}:
         return "friend"
     return normalized or "guest"
+
+
+def _owner_display_name(profile: dict | None = None) -> str:
+    if profile:
+        for key in ("owner_display_name", "owner_name", "account_owner", "owner"):
+            value = str(profile.get(key) or "").strip()
+            if value:
+                return value
+    return DEFAULT_OWNER_NAME
 
 
 def _normalize_closeness(value: str | None, relationship: str, interaction_count: int = 0) -> str:
@@ -438,7 +1127,7 @@ def _cultural_context_instruction(relationship: str, closeness: str) -> str:
         "father": "Indian family norm: progress, discipline, career, studies, and future planning matter.",
         "professor": "Indian academic norm: respect, clarity, deadlines, performance, and formal address matter.",
         "friend": "Indian college norm: casual updates, assignments, exams, placements, and light banter can fit.",
-        "owner": "Owner context: Yogesh is building Akansha while managing B.Tech studies, projects, exams, and career pressure.",
+        "owner": "Owner context: the account owner is building Akansha while managing studies, projects, exams, and career pressure.",
     }.get(relationship, "Indian context: respect elders, avoid over-familiarity with new people, and keep privacy boundaries.")
 
     return f"{time_context} {relationship_context} Closeness is {closeness}; adjust familiarity accordingly."
@@ -451,9 +1140,9 @@ def _relationship_examples(relationship: str, closeness: str, language_style: st
             "Use this only when safe and not serious."
         )
     if relationship == "mother":
-        return "Example vibe: \"Amma, I’ll explain calmly. Also, did Yogesh eat properly today?\""
+        return "Example vibe: \"Amma, I'll explain calmly. Also, did they eat properly today?\""
     if relationship == "father":
-        return "Example vibe: \"Yes, I’ll give the practical update first, then the next steps.\""
+        return "Example vibe: \"Yes, I'll give the practical update first, then the next steps.\""
     if relationship == "professor":
         return "Example vibe: \"Certainly, here is the current academic/project status in a structured way.\""
     if language_style == "hinglish":
@@ -470,9 +1159,11 @@ def build_social_intelligence_context(
 ) -> str:
     """Builds the relationship-aware behavior contract used by chat and voice replies."""
     profile = speaker_profile or {}
-    display_name = str(profile.get("display_name") or profile.get("name") or "Yogesh").strip()
+    owner_name = _owner_display_name(profile)
     relationship = _normalize_relationship(profile.get("relationship_to_owner"))
+    display_name = str(profile.get("display_name") or profile.get("name") or (owner_name if relationship == "owner" else "")).strip()
     style = RELATIONSHIP_STYLES.get(relationship, RELATIONSHIP_STYLES["guest"])
+    relationship_behavior = style["behavior"].format(owner_name=owner_name)
     access_level = str(profile.get("access_level") or ("owner" if relationship == "owner" else "guest")).strip().lower()
     interaction_count = int(profile.get("interaction_count") or 0)
     closeness = _normalize_closeness(profile.get("closeness_level"), relationship, interaction_count)
@@ -504,11 +1195,11 @@ def build_social_intelligence_context(
     return f"""
 SOCIAL INTELLIGENCE CONTRACT:
 - Active speaker: {display_name or "Unknown"}
-- Relationship to owner Yogesh: {relationship}
+- Relationship to owner {owner_name}: {relationship}
 - Closeness level: {closeness}. {CLOSENESS_STYLES[closeness]}
 - Access level: {access_level}
 - Relationship tone: {style["tone"]}
-- Relationship behavior: {style["behavior"]}
+- Relationship behavior: {relationship_behavior}
 - Relationship boundaries: {style["boundaries"]}
 - Voice alignment: {style["voice"]}
 - Communication style preference: {communication_style or "Infer from relationship, mood, and latest user wording."}
@@ -529,7 +1220,7 @@ HUMAN-LIKE RESPONSE RULES:
 - React first in a socially appropriate way, then answer or act.
 - Ask one natural follow-up when it helps the conversation continue, but do not ask unnecessary questions for direct tasks.
 - Keep relationship personality consistent over time. A friend stays casual, a professor stays respectful, parents stay family-toned, and the owner gets proactive assistant behavior.
-- Use real-life context when known: Yogesh is a B.Tech student building Akansha, with projects, exams, automation, voice, and assistant work.
+- Use real-life context when known: the account owner may be a student or builder working with Akansha, projects, exams, automation, voice, and assistant work. Use only the details present in memory/profile.
 - Match the user's language and slang level. Do not force slang if the user is formal. Do not use British tone for Indian Hindi/Telugu/Hinglish.
 - In voice or hybrid mode, use one short natural acknowledgement when it fits ("hmm", "okay", "got it", "sare", "haan") and then continue. Do not overuse fillers.
 - If the user code-switches inside one sentence, mirror that blend naturally instead of translating everything into one pure language.
@@ -1630,6 +2321,44 @@ def _needs_structured_table(user_input: str) -> bool:
     )
 
 
+def _is_deep_conversation_mode(conversation_mode: str | None) -> bool:
+    return (conversation_mode or "").strip().lower() in {"research", "agent", "skill", "deep"}
+
+
+def _response_token_limit(
+    user_input: str,
+    attachments: list[dict] | None = None,
+    conversation_mode: str | None = None,
+) -> int:
+    """Keep Quick/chat/voice responsive; reserve longer responses for explicit work modes."""
+    is_deep_mode = _is_deep_conversation_mode(conversation_mode)
+    if attachments:
+        return 900 if is_deep_mode else 520
+    requested_formats = _detect_output_formats(user_input)
+    lowered = user_input.lower()
+    if requested_formats:
+        return 1500 if is_deep_mode else 900
+    if _needs_structured_table(user_input) or _needs_live_web_context(user_input):
+        return 900 if is_deep_mode else 180
+    if len(user_input) <= 120 and not re.search(r"\b(explain|detail|deep|complete|full|step by step)\b", lowered):
+        return 160
+    return 700 if is_deep_mode else 360
+
+
+def _chat_request_timeout_seconds(
+    user_input: str,
+    attachments: list[dict] | None = None,
+    conversation_mode: str | None = None,
+) -> float:
+    if _is_deep_conversation_mode(conversation_mode):
+        return 32.0
+    if attachments:
+        return 18.0
+    if _needs_live_web_context(user_input) or _needs_structured_table(user_input):
+        return 12.0
+    return 8.0
+
+
 def _build_output_intent_context(user_input: str) -> str:
     requested_formats = _detect_output_formats(user_input)
     table_needed = _needs_structured_table(user_input)
@@ -1711,6 +2440,333 @@ def _build_attachment_message_content(user_input: str, attachments: list[dict]) 
     return content
 
 
+def _local_image_attachment_summary(attachments: list[dict]) -> str | None:
+    """Return a deterministic local pixel summary when cloud vision is unavailable."""
+    image_lines: list[str] = []
+    for index, attachment in enumerate((attachments or [])[:5], start=1):
+        mime_type = str(attachment.get("type") or "")
+        data_url = str(attachment.get("data_url") or "")
+        if not mime_type.startswith("image/") or not data_url.startswith("data:image/") or "," not in data_url:
+            continue
+
+        name = str(attachment.get("name") or f"image-{index}")
+        size = attachment.get("size")
+        try:
+            from PIL import Image, ImageStat
+
+            raw = base64.b64decode(data_url.split(",", 1)[1], validate=False)
+            with Image.open(io.BytesIO(raw)) as image:
+                rgb = image.convert("RGB")
+                stat = ImageStat.Stat(rgb.resize((80, 80)))
+                mean = tuple(int(value) for value in stat.mean[:3])
+                brightness = round(sum(mean) / 3)
+                orientation = "landscape" if image.width > image.height else "portrait" if image.height > image.width else "square"
+                image_lines.append(
+                    f"- {name}: {image.width}x{image.height}px {orientation} {mime_type}; "
+                    f"approx brightness {brightness}/255; average RGB {mean}; uploaded size {size or len(raw)} bytes."
+                )
+        except Exception:
+            image_lines.append(f"- {name}: image received and queued, but local pixel metadata could not be decoded.")
+
+    if not image_lines:
+        return None
+
+    return (
+        "I received the image and completed the local pixel pass:\n"
+        + "\n".join(image_lines)
+        + "\nFor tiny text/OCR, object recognition, or detailed screenshot reasoning, the vision lane must be active; I will not invent details that are not locally readable."
+    )
+
+
+QUESTION_NUMBER_KEYS = {
+    "question_number",
+    "questionno",
+    "question_no",
+    "questionid",
+    "question_id",
+    "qno",
+    "q_no",
+    "number",
+    "no",
+    "id",
+    "serial",
+    "index",
+    "sno",
+    "s_no",
+}
+
+
+def _attachment_text_items(attachments: list[dict] | None) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    for index, attachment in enumerate((attachments or [])[:5], start=1):
+        text = str(attachment.get("text") or "")
+        if not text.strip():
+            continue
+        name = str(attachment.get("name") or f"attachment-{index}")
+        items.append((name, text))
+    return items
+
+
+def _extract_requested_question_number(user_input: str) -> int | None:
+    cleaned = _compact_text(user_input)
+    patterns = (
+        r"\b(?:question|q)\s*(?:number|no\.?|#)?\s*(\d{1,5})\b",
+        r"\b(\d{1,5})(?:st|nd|rd|th)?\s+(?:question|q)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, re.IGNORECASE)
+        if match:
+            value = int(match.group(1))
+            if value > 0:
+                return value
+    return None
+
+
+def _int_like(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if re.fullmatch(r"\d+", cleaned):
+            return int(cleaned)
+    return None
+
+
+def _find_numbered_json_item(data: object, number: int) -> object | None:
+    """Find item whose explicit id/no is number; fall back to list position."""
+    def walk(node: object) -> object | None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                normalized_key = re.sub(r"[^a-z0-9_]", "", str(key).lower())
+                if _int_like(key) == number and isinstance(value, (dict, list, str)):
+                    return value
+                if normalized_key in QUESTION_NUMBER_KEYS and _int_like(value) == number:
+                    return node
+            for value in node.values():
+                found = walk(value)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for value in node:
+                found = walk(value)
+                if found is not None:
+                    return found
+            if 0 < number <= len(node):
+                return node[number - 1]
+        return None
+
+    return walk(data)
+
+
+def _first_dict_value(item: dict, keys: tuple[str, ...]) -> str:
+    lowered = {str(key).lower(): value for key, value in item.items()}
+    for key in keys:
+        value = lowered.get(key.lower())
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _compact_json_value(value: object, limit: int = 700) -> str:
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, indent=2)
+    else:
+        text = str(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + "..."
+    return text
+
+
+def _format_question_item_answer(file_name: str, number: int, item: object) -> str:
+    if isinstance(item, dict):
+        question = _first_dict_value(
+            item,
+            (
+                "question",
+                "question_text",
+                "title",
+                "prompt",
+                "statement",
+                "text",
+                "content",
+                "name",
+            ),
+        )
+        topic = _first_dict_value(item, ("topic", "subject", "category", "chapter", "section", "tag"))
+        answer = _first_dict_value(item, ("answer", "correct_answer", "solution", "explanation"))
+        options = item.get("options") or item.get("choices") or item.get("mcq_options")
+
+        lines = [f"Question {number} in {file_name}:"]
+        if question:
+            lines.append(f"- It is about: {question}")
+        else:
+            lines.append(f"- Item content: {_compact_json_value(item)}")
+        if topic:
+            lines.append(f"- Topic/category: {topic}")
+        if options:
+            lines.append(f"- Options: {_compact_json_value(options, 400)}")
+        if answer:
+            lines.append(f"- Answer/solution field: {_compact_json_value(answer, 500)}")
+        return "\n".join(lines)
+
+    return (
+        f"Question {number} in {file_name}:\n"
+        f"- It is about: {_compact_json_value(item, 900)}"
+    )
+
+
+def _find_numbered_text_item(text: str, number: int) -> str | None:
+    lines = text.splitlines()
+    marker = re.compile(rf"^\s*(?:q(?:uestion)?\.?\s*)?{number}\s*[\).:\-]\s*(.+)?$", re.IGNORECASE)
+    for index, line in enumerate(lines):
+        if marker.match(line):
+            window = "\n".join(lines[index : min(len(lines), index + 8)]).strip()
+            return window[:1400]
+
+    inline = re.search(
+        rf"(?:question|q)\s*(?:number|no\.?|#)?\s*{number}\b(.{{0,1200}})",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if inline:
+        return re.sub(r"\s+", " ", inline.group(0)).strip()[:1400]
+    return None
+
+
+def _local_attachment_question_answer(user_input: str, attachments: list[dict] | None) -> str | None:
+    number = _extract_requested_question_number(user_input)
+    if not number:
+        return None
+
+    for file_name, text in _attachment_text_items(attachments):
+        try:
+            parsed = json.loads(text)
+            item = _find_numbered_json_item(parsed, number)
+            if item is not None:
+                return _format_question_item_answer(file_name, number, item)
+        except Exception:
+            pass
+
+        text_item = _find_numbered_text_item(text, number)
+        if text_item:
+            return (
+                f"Question {number} in {file_name}:\n"
+                f"- Matched text:\n{text_item}"
+            )
+
+    return None
+
+
+def _provider_failure_kind(error: Exception) -> str:
+    message = str(error).lower()
+    if isinstance(error, OpenRouterConfigurationError) or "401" in message or "authentication" in message or "unauthorized" in message:
+        return "auth"
+    if "402" in message or "credit" in message or "budget" in message or "insufficient" in message:
+        return "capacity"
+    if "timeout" in message or "timed out" in message:
+        return "timeout"
+    if "rate" in message and "limit" in message:
+        return "rate_limit"
+    return "provider"
+
+
+def _provider_failure_fallback(
+    user_input: str,
+    attachments: list[dict] | None,
+    error: Exception,
+    language_preference: str | None = None,
+) -> str:
+    preference = (language_preference or "").lower()
+    kind = _provider_failure_kind(error)
+    has_images = any(str(item.get("type") or "").startswith("image/") for item in attachments or [])
+    has_attachments = bool(attachments)
+    local_attachment_answer = _local_attachment_question_answer(user_input, attachments)
+    if local_attachment_answer:
+        return local_attachment_answer
+
+    if has_images:
+        local_summary = _local_image_attachment_summary(attachments or [])
+        if local_summary:
+            return local_summary
+        if "hindi" in preference:
+            return (
+                "Image attach ho gayi hai. Main local pixel summary de sakta hoon, par detailed OCR/object reasoning abhi complete nahi hua. "
+                "Screenshot ka exact part batao, main visible metadata se help karta hoon."
+            )
+        if "telugu" in preference:
+            return (
+                "Image attach ayyindi. Local pixel summary cheppagalanu, kani detailed OCR/object reasoning ippudu complete avvaledu. "
+                "Screenshot lo exact part cheppu, visible metadata tho help chestha."
+            )
+        return (
+            "I received the image. I can summarize local pixel metadata, but detailed OCR/object reasoning did not complete this turn. "
+            "Tell me the exact area you want checked and I will use the visible metadata without guessing."
+        )
+
+    if has_attachments:
+        return (
+            "I received the attachment and the upload path is working. Detailed file/video analysis did not complete this turn; "
+            "for now, paste the exact section you want checked and I will handle that part locally."
+        )
+
+    if _should_use_local_utility_reply(user_input):
+        return _fast_local_reply_for_provider_failure(user_input, language_preference)
+
+    local_quick_answer = _quick_local_response(
+        _NoopDb(),
+        user_input,
+        language_preference,
+        speaker_profile=None,
+        allow_conversation_fragments=True,
+    )
+    if local_quick_answer:
+        return local_quick_answer
+
+    if _wants_joke(user_input):
+        return _fallback_joke_reply(user_input, language_preference or "")
+
+    if kind == "auth":
+        return (
+            "I can answer quick local tasks, but this message needs the advanced answer lane and that lane is not active in this backend session. "
+            "Restart the backend after saving the environment, then send it again."
+        )
+
+    if kind in {"capacity", "rate_limit"}:
+        if _should_use_local_utility_reply(user_input):
+            return _fast_local_reply_for_provider_failure(user_input, language_preference)
+        return (
+            "I could not verify that advanced online result this turn, so I will not guess. "
+            "Quick local questions still answer immediately; use Research/Agent/Skill again when you want a source-checked result."
+        )
+
+    if kind == "timeout":
+        return (
+            "That answer took too long, so I stopped waiting instead of leaving the chat stuck. "
+            "Send the core question again, or switch to Research/Agent/Skill for a longer workflow."
+        )
+
+    return (
+        "I could not get a usable advanced response this turn. Quick local answers are still available; retry once after the backend settles."
+    )
+
+
+def _fast_local_reply_for_provider_failure(user_input: str, language_preference: str | None = None) -> str:
+    return _fast_local_reply(_NoopDb(), user_input, language_preference) or _quick_local_response(
+        _NoopDb(),
+        user_input,
+        language_preference,
+        speaker_profile=None,
+        allow_conversation_fragments=True,
+    ) or (
+        "I could not answer that path this turn. Try the core question again after the backend settles."
+    )
+
+
 def generate_chat_stream(
     db: Session,
     user_input: str,
@@ -1723,20 +2779,43 @@ def generate_chat_stream(
     speaker_profile: dict | None = None,
 ):
     """Generator for streaming responses."""
+    effective_language_preference = _detect_user_language_preference(user_input, language_preference)
+    local_attachment_answer = _local_attachment_question_answer(user_input, attachments)
+    if local_attachment_answer:
+        yield local_attachment_answer
+        return
+
+    if _should_use_local_utility_reply(user_input, attachments):
+        fast_reply = _fast_local_reply(db, user_input, effective_language_preference)
+        if fast_reply:
+            yield fast_reply
+            return
+
+    if not attachments and not _is_deep_conversation_mode(conversation_mode):
+        quick_reply = _quick_local_response(
+            db,
+            user_input,
+            effective_language_preference,
+            speaker_profile=speaker_profile,
+            allow_conversation_fragments=True,
+        )
+        if quick_reply:
+            yield quick_reply
+            return
+
     history_records = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == session_id)
         .order_by(ChatMessage.display_order.desc(), ChatMessage.id.desc())
-        .limit(15)
+        .limit(10)
         .all()
     )
     
     # We remove the duplicate manual append since main.py already saved the current user_input to the DB
     history = [{"role": r.role, "content": r.content} for r in reversed(history_records)]
     
-    memories = db.query(Memory).order_by(Memory.importance.desc()).all()
+    memories = db.query(Memory).order_by(Memory.importance.desc()).limit(12).all()
     memory_str = "CORE MEMORIES (FACTS YOU MUST USE):\n" + "\n".join([f"- {m.topic}: {m.insight}" for m in memories])
-    effective_language_preference = _detect_user_language_preference(user_input, language_preference)
 
     dynamic_context = [
         build_social_intelligence_context(speaker_profile, user_input, user_tone),
@@ -1793,29 +2872,45 @@ def generate_chat_stream(
         else:
             messages.append({"role": "user", "content": multimodal_content})
     
-    with open("debug_prompt.txt", "w") as f:
-        f.write(json.dumps(messages, indent=2))
+    if os.getenv("AKANSHA_DEBUG_PROMPT") == "1":
+        with open("debug_prompt.txt", "w", encoding="utf-8") as f:
+            f.write(json.dumps(messages, indent=2, ensure_ascii=False))
 
-    response = client.chat.completions.create(
-        model=OPENROUTER_MODEL,
-        messages=messages,
-        temperature=0.7,
-        max_tokens=1200,
-        stream=True
-    )
-    
-    full_response = ""
-    for chunk in response:
-        if chunk.choices[0].delta.content:
-            content = chunk.choices[0].delta.content
-            full_response += content
-            yield content
+    try:
+        client = _openrouter_client()
+        if hasattr(client, "with_options"):
+            client = client.with_options(
+                timeout=_chat_request_timeout_seconds(user_input, attachments, conversation_mode)
+            )
+        response = client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=messages,
+            temperature=0.55,
+            max_tokens=_response_token_limit(user_input, attachments, conversation_mode),
+            stream=True
+        )
+
+        full_response = ""
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                content = chunk.choices[0].delta.content
+                full_response += content
+                yield content
+    except Exception as exc:
+        yield _provider_failure_fallback(user_input, attachments, exc, effective_language_preference)
             
     # We yield a special token at the end or handle the background task in main.py
 
 def analyze_intent_and_memory(db: Session, user_input: str, assistant_response: str):
     """Background task to extract memory and intent (e.g. creating tasks)."""
     _capture_deterministic_memories(db, user_input)
+    if _should_skip_ai_memory_analysis(user_input, assistant_response):
+        try:
+            db.commit()
+        except Exception:
+            pass
+        return
+
     existing_memories = db.query(Memory).all()
     memories_str = "Existing Memories:\n" + "\n".join([f"ID: {m.id} | Topic: {m.topic} | Insight: {m.insight}" for m in existing_memories])
 
@@ -1843,10 +2938,11 @@ def analyze_intent_and_memory(db: Session, user_input: str, assistant_response: 
     Akansha: {assistant_response}
     """
     try:
-        res = client.chat.completions.create(
+        res = _openrouter_client().chat.completions.create(
             model=OPENROUTER_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            max_tokens=220,
         )
         data = json.loads(res.choices[0].message.content)
         
@@ -1884,4 +2980,8 @@ def analyze_intent_and_memory(db: Session, user_input: str, assistant_response: 
                 
             loop.run_until_complete(execute_desktop_command(automation['action'], automation.get('target')))
     except Exception as e:
-        print(f"Analysis failed: {e}")
+        kind = _provider_failure_kind(e)
+        if kind in {"auth", "capacity", "rate_limit", "timeout"}:
+            print("Analysis skipped: provider unavailable for background memory extraction.")
+            return
+        print(f"Analysis skipped: {type(e).__name__}")

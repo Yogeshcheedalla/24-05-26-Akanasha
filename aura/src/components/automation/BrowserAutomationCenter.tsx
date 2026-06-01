@@ -66,7 +66,7 @@ export function BrowserAutomationCenter() {
       const data: BrowserAutomationStatus = await res.json();
       setStatus(data);
     } catch (error) {
-      console.error('Failed to load browser automation status:', error);
+      console.warn('Failed to load browser automation status:', error);
       toast.error('Could not load browser automation');
     } finally {
       setLoading(false);
@@ -112,7 +112,7 @@ export function BrowserAutomationCenter() {
         }
         await loadStatus();
       } catch (error) {
-        console.error('Failed to run freeform automation prompt:', error);
+        console.warn('Failed to run freeform automation prompt:', error);
         toast.error(error instanceof Error ? error.message : 'Automation failed');
       } finally {
         setRunning(false);
@@ -134,7 +134,7 @@ export function BrowserAutomationCenter() {
         toast.success('Scheduled automation removed');
         await loadStatus();
       } catch (error) {
-        console.error('Failed to remove scheduled automation:', error);
+        console.warn('Failed to remove scheduled automation:', error);
         toast.error('Could not remove scheduled automation');
       } finally {
         setDeletingId(null);

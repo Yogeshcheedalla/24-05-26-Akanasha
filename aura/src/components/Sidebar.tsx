@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
 import AppLogo from './ui/AppLogo';
 import {
   MessageSquare,
@@ -90,6 +91,13 @@ const navItems = [
     badge: null,
   },
   {
+    key: 'nav-cognitive-dashboard',
+    href: '/cognitive-dashboard',
+    icon: Cpu,
+    label: 'Observatory',
+    badge: null,
+  },
+  {
     key: 'nav-prompts',
     href: '/chat-interface',
     icon: BookMarked,
@@ -131,6 +139,9 @@ export default function Sidebar({
   onClose,
 }: SidebarProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const currentPath = activePath || pathname || '';
+  const navigationFallbackRef = useRef<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [recentConversations, setRecentConversations] = useState<RecentConversation[]>([]);
   const [profile, setProfile] = useState<{ full_name: string; username?: string } | null>(null);
@@ -144,7 +155,7 @@ export default function Sidebar({
           setProfile(data.profile);
         }
       } catch (err) {
-        console.error('Failed to fetch profile:', err);
+        console.warn('Failed to fetch profile:', err);
       }
     };
     fetchProfile();
@@ -207,7 +218,7 @@ export default function Sidebar({
           setRecentConversations(items);
         })
         .catch((error) => {
-          console.error('Failed to load recent conversations:', error);
+          console.warn('Failed to load recent conversations:', error);
           setRecentConversations([]);
         });
     };
@@ -221,6 +232,20 @@ export default function Sidebar({
     };
   }, []);
 
+  useEffect(() => {
+    if (!navigationFallbackRef.current) return;
+    window.clearTimeout(navigationFallbackRef.current);
+    navigationFallbackRef.current = null;
+  }, [currentPath]);
+
+  useEffect(() => {
+    return () => {
+      if (navigationFallbackRef.current) {
+        window.clearTimeout(navigationFallbackRef.current);
+      }
+    };
+  }, []);
+
   const filtered = recentConversations.filter((conv) => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return true;
@@ -228,13 +253,36 @@ export default function Sidebar({
     return conv.title.toLowerCase().includes(query) || conv.model.toLowerCase().includes(query);
   });
 
+  const reliableNavigate = (href: string) => {
+    if (!href || currentPath === href) return false;
+
+    if (navigationFallbackRef.current) {
+      window.clearTimeout(navigationFallbackRef.current);
+    }
+
+    router.push(href);
+    navigationFallbackRef.current = window.setTimeout(() => {
+      if (window.location.pathname !== href) {
+        window.location.href = href;
+      }
+    }, 250);
+
+    return true;
+  };
+
   const deleteRecentConversation = async (
     event: React.MouseEvent<HTMLElement>,
     conversation: RecentConversation
   ) => {
+    event.preventDefault();
     event.stopPropagation();
     const confirmed = window.confirm(`Delete "${conversation.title}" from chat history?`);
     if (!confirmed) return;
+
+    const previousConversations = recentConversations;
+    deleteSessionTitle(conversation.id);
+    setRecentConversations((items) => items.filter((item) => item.id !== conversation.id));
+    window.dispatchEvent(new CustomEvent('akansha-history-updated'));
 
     try {
       const response = await fetch(
@@ -246,12 +294,11 @@ export default function Sidebar({
         throw new Error(payload.detail || 'Could not delete this conversation.');
       }
 
-      deleteSessionTitle(conversation.id);
-      setRecentConversations((items) => items.filter((item) => item.id !== conversation.id));
       window.dispatchEvent(new CustomEvent('akansha-history-updated'));
       toast.success('Conversation deleted');
     } catch (error) {
-      console.error('Failed to delete recent conversation:', error);
+      console.warn('[Akansha sidebar] recovered delete failure:', error);
+      setRecentConversations(previousConversations);
       toast.error(error instanceof Error ? error.message : 'Could not delete this conversation.');
     }
   };
@@ -259,11 +306,11 @@ export default function Sidebar({
   const openChat = (options?: { newChat?: boolean; promptLibrary?: boolean }) => {
     if (options?.newChat) {
       const nextSessionId = createSessionId();
-      if (activePath === '/chat-interface') {
+      if (currentPath === '/chat-interface') {
         window.dispatchEvent(new CustomEvent('akansha-new-chat', { detail: nextSessionId }));
       } else {
         sessionStorage.setItem('akansha-active-session', nextSessionId);
-        router.push('/chat-interface');
+        reliableNavigate('/chat-interface');
       }
       toast.success('Started a new conversation');
       onClose?.();
@@ -271,27 +318,31 @@ export default function Sidebar({
     }
 
     if (options?.promptLibrary) {
-      if (activePath === '/chat-interface') {
+      if (currentPath === '/chat-interface') {
         window.dispatchEvent(new CustomEvent('akansha-toggle-prompts'));
         toast.success('Opened Prompt Library');
       } else {
         sessionStorage.setItem('akansha-open-prompts', 'true');
-        router.push('/chat-interface');
+        reliableNavigate('/chat-interface');
       }
+      onClose?.();
       return;
     }
 
-    if (activePath !== '/chat-interface') {
-      router.push('/chat-interface');
+    if (currentPath !== '/chat-interface') {
+      reliableNavigate('/chat-interface');
     }
     onClose?.();
   };
 
   const handleNavClick = (
-    event: React.MouseEvent<HTMLButtonElement>,
+    event: React.MouseEvent<HTMLElement>,
     label: string,
     href: string
   ) => {
+    event.preventDefault();
+    event.stopPropagation();
+
     if (label === 'New Chat') {
       openChat({ newChat: true });
       return;
@@ -307,9 +358,7 @@ export default function Sidebar({
       return;
     }
 
-    if (activePath !== href) {
-      window.location.assign(href);
-    } else {
+    if (!reliableNavigate(href)) {
       toast.success(`${label} is already open`, { duration: 900 });
     }
     onClose?.();
@@ -317,13 +366,14 @@ export default function Sidebar({
 
   const handleFeatureClick = (label: string) => {
     if (label === 'Memory') {
-      if (activePath === '/chat-interface') {
+      if (currentPath === '/chat-interface') {
         window.dispatchEvent(new CustomEvent('akansha-toggle-panel', { detail: 'context' }));
         toast.success('Opened Memory panel');
       } else {
         sessionStorage.setItem('akansha-open-memory', 'true');
-        router.push('/chat-interface');
+        reliableNavigate('/chat-interface');
       }
+      onClose?.();
     } else {
       toast('Feature Coming Soon', {
         description: `${label} is currently being optimized.`,
@@ -356,6 +406,7 @@ export default function Sidebar({
         <div className="flex items-center gap-1">
           {onClose && (
             <button
+              type="button"
               onClick={onClose}
               className="lg:hidden p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
               aria-label="Close sidebar"
@@ -364,6 +415,7 @@ export default function Sidebar({
             </button>
           )}
           <button
+            type="button"
             onClick={onToggleCollapse}
             className="hidden lg:flex p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
@@ -396,25 +448,20 @@ export default function Sidebar({
       <nav className="p-2 border-b border-[hsl(var(--sidebar-border))]">
         {navItems.map((item) => {
           const Icon = item.icon;
-          const isActive = activePath === item.href;
-          return (
-            <button
-              type="button"
-              key={item.key}
-              onClick={(event) => handleNavClick(event, item.label, item.href)}
-              title={collapsed ? item.label : undefined}
-              className={`
-                w-full
-                flex items-center gap-2.5 rounded-lg px-2.5 py-2 mb-0.5 text-sm font-medium
-                transition-all duration-150
-                ${
-                  isActive
-                    ? 'bg-[#6C47FF]/10 text-[#6C47FF] dark:bg-[#6C47FF]/15 dark:text-[#9B7FFF]'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                }
-                ${collapsed ? 'justify-center' : ''}
-              `}
-            >
+          const isActive = item.label !== 'Prompts' && currentPath === item.href;
+          const navClassName = `
+            w-full
+            flex items-center gap-2.5 rounded-lg px-2.5 py-2 mb-0.5 text-sm font-medium
+            transition-all duration-150
+            ${
+              isActive
+                ? 'bg-[#6C47FF]/10 text-[#6C47FF] dark:bg-[#6C47FF]/15 dark:text-[#9B7FFF]'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            }
+            ${collapsed ? 'justify-center' : ''}
+          `;
+          const content = (
+            <>
               <Icon size={17} className="shrink-0" />
               {!collapsed && (
                 <>
@@ -426,7 +473,34 @@ export default function Sidebar({
                   )}
                 </>
               )}
-            </button>
+            </>
+          );
+
+          if (item.label === 'Prompts') {
+            return (
+              <button
+                type="button"
+                key={item.key}
+                onClick={(event) => handleNavClick(event, item.label, item.href)}
+                title={collapsed ? item.label : undefined}
+                className={navClassName}
+              >
+                {content}
+              </button>
+            );
+          }
+
+          return (
+            <Link
+              key={item.key}
+              href={item.href}
+              prefetch={false}
+              onClick={(event) => handleNavClick(event, item.label, item.href)}
+              title={collapsed ? item.label : undefined}
+              className={navClassName}
+            >
+              {content}
+            </Link>
           );
         })}
       </nav>
@@ -459,26 +533,26 @@ export default function Sidebar({
                 tabIndex={0}
                 key={conv.id}
                 onClick={(event) => {
-                  if (activePath === '/chat-interface') {
+                  if (currentPath === '/chat-interface') {
                     window.dispatchEvent(
                       new CustomEvent('akansha-select-session', { detail: conv.id })
                     );
                   } else {
                     sessionStorage.setItem('akansha-active-session', conv.id);
-                    router.push('/chat-interface');
+                    reliableNavigate('/chat-interface');
                   }
                   onClose?.();
                 }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
-                    if (activePath === '/chat-interface') {
+                    if (currentPath === '/chat-interface') {
                       window.dispatchEvent(
                         new CustomEvent('akansha-select-session', { detail: conv.id })
                       );
                     } else {
                       sessionStorage.setItem('akansha-active-session', conv.id);
-                      router.push('/chat-interface');
+                      reliableNavigate('/chat-interface');
                     }
                     onClose?.();
                   }
@@ -523,18 +597,24 @@ export default function Sidebar({
           { key: 'nav-settings', icon: Settings, label: 'Settings', href: '/settings' },
         ].map(({ key, icon: Icon, label, href }) =>
           href ? (
-            <button
-              type="button"
+            <Link
               key={key}
-              onClick={(event) => handleNavClick(event, label, href)}
+              href={href}
+              prefetch={false}
+              onClick={(event) => {
+                event.preventDefault();
+                reliableNavigate(href);
+                onClose?.();
+              }}
               title={collapsed ? label : undefined}
               className={`flex items-center gap-2.5 w-full rounded-lg px-2.5 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors ${collapsed ? 'justify-center' : ''}`}
             >
               <Icon size={16} className="shrink-0" />
               {!collapsed && <span>{label}</span>}
-            </button>
+            </Link>
           ) : (
             <button
+              type="button"
               key={key}
               onClick={() => handleFeatureClick(label)}
               title={collapsed ? label : undefined}
@@ -559,6 +639,7 @@ export default function Sidebar({
             </div>
           )}
           <button
+            type="button"
             onClick={() => {
               sessionStorage.clear();
               localStorage.clear();

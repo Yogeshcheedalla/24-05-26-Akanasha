@@ -7,9 +7,6 @@ import ContextPanel from './ContextPanel';
 import PromptTemplateModal from './PromptTemplateModal';
 import { PanelLeft } from 'lucide-react';
 
-const TOKEN_USAGE_STORAGE_KEY = 'akansha-token-usage';
-const MAX_CONTEXT_TOKENS = 128000;
-
 function createSessionId() {
   return `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -17,11 +14,8 @@ function createSessionId() {
 export default function ChatWorkspace() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
-  const [sessionId, setSessionId] = useState(() => {
-    if (typeof window === 'undefined') return createSessionId();
-    return sessionStorage.getItem('akansha-current-session') || createSessionId();
-  });
-  const [chatStats, setChatStats] = useState({ messages: 0, tokens: 0 });
+  const [sessionId, setSessionId] = useState('default');
+  const [chatStats, setChatStats] = useState({ messages: 0, contextUnits: 0 });
   const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
 
   const startNewChat = (nextSessionId?: string) => {
@@ -29,21 +23,20 @@ export default function ChatWorkspace() {
     setIsPromptModalOpen(false);
   };
 
-  React.useEffect(() => {
-    sessionStorage.setItem('akansha-current-session', sessionId);
-  }, [sessionId]);
+  const handleStatsChange = React.useCallback((messages: number, contextUnits: number) => {
+    setChatStats((previous) => {
+      if (previous.messages === messages && previous.contextUnits === contextUnits) {
+        return previous;
+      }
+      return { messages, contextUnits };
+    });
+  }, []);
 
   React.useEffect(() => {
-    const usage = {
-      sessionId,
-      messages: chatStats.messages,
-      tokens: chatStats.tokens,
-      maxTokens: MAX_CONTEXT_TOKENS,
-      updatedAt: new Date().toISOString(),
-    };
-    window.localStorage.setItem(TOKEN_USAGE_STORAGE_KEY, JSON.stringify(usage));
-    window.dispatchEvent(new CustomEvent('akansha-token-usage-updated', { detail: usage }));
-  }, [chatStats.messages, chatStats.tokens, sessionId]);
+    if (sessionId !== 'default') {
+      sessionStorage.setItem('akansha-current-session', sessionId);
+    }
+  }, [sessionId]);
 
   React.useEffect(() => {
     const handleTogglePanel = () => {
@@ -71,6 +64,8 @@ export default function ChatWorkspace() {
     if (pendingSession) {
       setSessionId(pendingSession);
       sessionStorage.removeItem('akansha-active-session');
+    } else {
+      setSessionId(sessionStorage.getItem('akansha-current-session') || createSessionId());
     }
 
     if (sessionStorage.getItem('akansha-open-memory') === 'true') {
@@ -124,7 +119,7 @@ export default function ChatWorkspace() {
           <ContextPanel
             onClose={() => setContextPanelOpen(false)}
             messageCount={chatStats.messages}
-            tokenCount={chatStats.tokens}
+            contextUnits={chatStats.contextUnits}
           />
         </div>
       )}
@@ -134,7 +129,7 @@ export default function ChatWorkspace() {
         <ChatThread
           key={sessionId}
           sessionId={sessionId}
-          onStatsChange={(messages, tokens) => setChatStats({ messages, tokens })}
+          onStatsChange={handleStatsChange}
         />
       </div>
       {/* Modals */}

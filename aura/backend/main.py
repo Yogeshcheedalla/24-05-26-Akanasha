@@ -48,7 +48,7 @@ from .database import (
     SpeakerProfile,
     SpeakerInteraction,
 )
-from .ai_engine import generate_chat_stream, analyze_intent_and_memory
+from .ai_engine import generate_chat_stream, analyze_intent_and_memory, _should_skip_ai_memory_analysis
 from .artifact_engine import (
     GENERATED_ARTIFACTS_DIR,
     artifact_markdown,
@@ -118,6 +118,15 @@ def prepare_message_insert_order(
         )
     )
     return anchor_order + 1
+
+
+def is_broken_assistant_response(user_input: str, response_text: str) -> bool:
+    cleaned = " ".join((response_text or "").strip().split())
+    if not cleaned:
+        return True
+    if cleaned == "0" and not re.search(r"\b(zero|0|number|digit|math|calculate|count)\b", user_input.lower()):
+        return True
+    return False
 
 # @app.on_event("startup")
 # def reset_database():
@@ -3557,6 +3566,8 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks, db:
         )
         response_text = "".join(list(response_generator))
         response_text = sanitize_model_artifact_placeholders(response_text)
+        if is_broken_assistant_response(req.message, response_text):
+            raise RuntimeError("The AI provider returned an empty response. Please try again.")
         artifacts = create_requested_artifacts(req.message, response_text)
         response_text += artifact_markdown(artifacts)
         
@@ -3573,7 +3584,8 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks, db:
         _record_assistant_speaker_interaction(req, db, speaker_context, response_text)
 
         # Background Task: Extract Memories & Tasks
-        background_tasks.add_task(analyze_intent_and_memory, db, req.message, response_text)
+        if not _should_skip_ai_memory_analysis(req.message, response_text):
+            background_tasks.add_task(analyze_intent_and_memory, db, req.message, response_text)
 
         return {"response": response_text}
     except Exception as e:
@@ -3678,6 +3690,8 @@ async def chat_stream_endpoint(
                     yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
 
             response_text = sanitize_model_artifact_placeholders(response_text)
+            if is_broken_assistant_response(req.message, response_text):
+                raise RuntimeError("The AI provider returned an empty response. Please try again.")
             if buffer_file_response and response_text:
                 yield f"data: {json.dumps({'type': 'chunk', 'content': response_text})}\n\n"
             artifacts = create_requested_artifacts(req.message, response_text)
@@ -3696,7 +3710,8 @@ async def chat_stream_endpoint(
             db.add(ai_msg)
             db.commit()
             _record_assistant_speaker_interaction(req, db, speaker_context, response_text)
-            background_tasks.add_task(analyze_intent_and_memory, db, req.message, response_text)
+            if not _should_skip_ai_memory_analysis(req.message, response_text):
+                background_tasks.add_task(analyze_intent_and_memory, db, req.message, response_text)
             yield f"data: {json.dumps({'type': 'done', 'content': response_text, 'user_message_id': user_msg.id, 'assistant_message_id': ai_msg.id})}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"

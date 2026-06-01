@@ -214,7 +214,7 @@ async function sendDesktopPlannerNotification(title: string, body: string) {
       body: JSON.stringify({ title, body }),
     });
   } catch (error) {
-    console.error('Failed to send desktop notification:', error);
+    console.warn('Failed to send desktop notification:', error);
   }
 }
 
@@ -310,7 +310,11 @@ export default function TaskCalendarPanel() {
           notified: false,
         };
         setActiveTab('tasks');
-        setTasks((previous) => [nextTask, ...previous]);
+        setTasks((previous) => {
+          const next = [nextTask, ...previous];
+          writeStorage(TASKS_STORAGE_KEY, next);
+          return next;
+        });
         toast.success('Added to your to-do planner');
         return;
       }
@@ -327,11 +331,13 @@ export default function TaskCalendarPanel() {
         notified: false,
       };
       setActiveTab('calendar');
-      setEvents((previous) =>
-        [...previous, nextEvent].sort(
+      setEvents((previous) => {
+        const next = [...previous, nextEvent].sort(
           (a, b) => getEventStartDate(a).getTime() - getEventStartDate(b).getTime()
-        )
-      );
+        );
+        writeStorage(EVENTS_STORAGE_KEY, next);
+        return next;
+      });
       toast.success('Added to your calendar planner');
     };
 
@@ -421,11 +427,13 @@ export default function TaskCalendarPanel() {
       notified: false,
     };
 
-    setTasks((previous) =>
-      editingTaskId
+    setTasks((previous) => {
+      const next = editingTaskId
         ? previous.map((item) => (item.id === editingTaskId ? { ...item, ...nextTask } : item))
-        : [nextTask, ...previous]
-    );
+        : [nextTask, ...previous];
+      writeStorage(TASKS_STORAGE_KEY, next);
+      return next;
+    });
     resetTaskForm();
     toast.success(editingTaskId ? 'Task updated' : 'Task added to your planner');
   };
@@ -457,11 +465,13 @@ export default function TaskCalendarPanel() {
       notified: false,
     };
 
-    setEvents((previous) =>
-      [...previous.filter((item) => item.id !== editingEventId), nextEvent].sort(
+    setEvents((previous) => {
+      const next = [...previous.filter((item) => item.id !== editingEventId), nextEvent].sort(
         (a, b) => getEventStartDate(a).getTime() - getEventStartDate(b).getTime()
-      )
-    );
+      );
+      writeStorage(EVENTS_STORAGE_KEY, next);
+      return next;
+    });
     resetEventForm();
     toast.success(editingEventId ? 'Calendar reminder updated' : 'Calendar event scheduled');
   };
@@ -469,7 +479,7 @@ export default function TaskCalendarPanel() {
   const pendingTasks = useMemo(() => tasks.filter((task) => !task.completed).length, [tasks]);
   const doneTasks = useMemo(() => tasks.filter((task) => task.completed).length, [tasks]);
   const upcomingEvents = useMemo(
-    () => events.sort((a, b) => getEventStartDate(a).getTime() - getEventStartDate(b).getTime()),
+    () => [...events].sort((a, b) => getEventStartDate(a).getTime() - getEventStartDate(b).getTime()),
     [events]
   );
 
@@ -481,6 +491,7 @@ export default function TaskCalendarPanel() {
           { key: 'calendar', label: 'Calendar', icon: CalendarDays, badge: upcomingEvents.length },
         ].map(({ key, label, icon: Icon, badge }) => (
           <button
+            type="button"
             key={key}
             onClick={() => setActiveTab(key as 'tasks' | 'calendar')}
             className={`flex items-center justify-center gap-2 px-3 py-3 text-sm font-medium transition-colors ${
@@ -586,6 +597,7 @@ export default function TaskCalendarPanel() {
 
                   <div className="flex gap-2">
                     <button
+                      type="button"
                       onClick={addTask}
                       className="inline-flex items-center gap-2 rounded-2xl bg-[#6C47FF] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#5A35EE]"
                     >
@@ -593,6 +605,7 @@ export default function TaskCalendarPanel() {
                       {editingTaskId ? 'Update task' : 'Save task'}
                     </button>
                     <button
+                      type="button"
                       onClick={resetTaskForm}
                       className="rounded-2xl border border-white/10 px-4 py-2.5 text-sm text-muted-foreground hover:bg-muted"
                     >
@@ -603,6 +616,7 @@ export default function TaskCalendarPanel() {
               </div>
             ) : (
               <button
+                type="button"
                 onClick={() => setShowTaskForm(true)}
                 className="flex w-full items-center justify-center gap-2 rounded-3xl border border-dashed border-[#6C47FF]/30 bg-[#6C47FF]/6 px-4 py-3 text-sm font-medium text-[#b9a8ff] transition-colors hover:border-[#6C47FF]/50 hover:bg-[#6C47FF]/10"
               >
@@ -623,12 +637,15 @@ export default function TaskCalendarPanel() {
                 >
                   <div className="flex items-start gap-3">
                     <button
+                      type="button"
                       onClick={() =>
-                        setTasks((previous) =>
-                          previous.map((item) =>
+                        setTasks((previous) => {
+                          const next = previous.map((item) =>
                             item.id === task.id ? { ...item, completed: !item.completed } : item
-                          )
-                        )
+                          );
+                          writeStorage(TASKS_STORAGE_KEY, next);
+                          return next;
+                        })
                       }
                       className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border transition-colors ${
                         task.completed
@@ -672,14 +689,24 @@ export default function TaskCalendarPanel() {
 
                     <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                       <button
-                        onClick={() => editTask(task)}
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          editTask(task);
+                        }}
                         className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
                       >
                         <Pencil size={14} />
                       </button>
                       <button
-                        onClick={() => {
-                          setTasks((previous) => previous.filter((item) => item.id !== task.id));
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setTasks((previous) => {
+                            const next = previous.filter((item) => item.id !== task.id);
+                            writeStorage(TASKS_STORAGE_KEY, next);
+                            return next;
+                          });
                           toast.success('Task removed');
                         }}
                         className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-red-400"
@@ -701,6 +728,7 @@ export default function TaskCalendarPanel() {
                 <Bell size={15} className="text-sky-300" />
                 <p className="text-sm font-medium text-foreground">Today's time windows</p>
                 <button
+                  type="button"
                   onClick={() => {
                     void sendPlannerTestAlert();
                     toast.success('Test alert sent');
@@ -805,6 +833,7 @@ export default function TaskCalendarPanel() {
 
                   <div className="flex gap-2">
                     <button
+                      type="button"
                       onClick={addEvent}
                       className="inline-flex items-center gap-2 rounded-2xl bg-sky-500 px-4 py-2.5 text-sm font-medium text-slate-950 transition-colors hover:bg-sky-400"
                     >
@@ -812,6 +841,7 @@ export default function TaskCalendarPanel() {
                       {editingEventId ? 'Update event' : 'Save event'}
                     </button>
                     <button
+                      type="button"
                       onClick={resetEventForm}
                       className="rounded-2xl border border-white/10 px-4 py-2.5 text-sm text-muted-foreground hover:bg-muted"
                     >
@@ -822,6 +852,7 @@ export default function TaskCalendarPanel() {
               </div>
             ) : (
               <button
+                type="button"
                 onClick={() => setShowEventForm(true)}
                 className="flex w-full items-center justify-center gap-2 rounded-3xl border border-dashed border-sky-500/30 bg-sky-500/6 px-4 py-3 text-sm font-medium text-sky-200 transition-colors hover:border-sky-500/50 hover:bg-sky-500/10"
               >
@@ -869,14 +900,24 @@ export default function TaskCalendarPanel() {
 
                     <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                       <button
-                        onClick={() => editEvent(event)}
+                        type="button"
+                        onClick={(clickEvent) => {
+                          clickEvent.stopPropagation();
+                          editEvent(event);
+                        }}
                         className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
                       >
                         <Pencil size={14} />
                       </button>
                       <button
-                        onClick={() => {
-                          setEvents((previous) => previous.filter((item) => item.id !== event.id));
+                        type="button"
+                        onClick={(clickEvent) => {
+                          clickEvent.stopPropagation();
+                          setEvents((previous) => {
+                            const next = previous.filter((item) => item.id !== event.id);
+                            writeStorage(EVENTS_STORAGE_KEY, next);
+                            return next;
+                          });
                           toast.success('Calendar event removed');
                         }}
                         className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-red-400"

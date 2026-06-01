@@ -101,6 +101,8 @@ class CognitiveStore:
         self._init_agents()
         self._init_operating_system()
         self._init_goal_engine()
+        self._init_observability_engines()
+        self._init_digital_twin()
 
     def _init_memories(self) -> None:
         with self.connect(self.files.memories) as conn:
@@ -497,6 +499,395 @@ class CognitiveStore:
                 CREATE INDEX IF NOT EXISTS idx_goal_milestones_goal ON goal_milestones(goal_id, status);
                 CREATE INDEX IF NOT EXISTS idx_opportunities_goal ON opportunities(goal_id, priority);
                 CREATE INDEX IF NOT EXISTS idx_personal_os_type ON personal_os_items(item_type, updated_at);
+                """
+            )
+
+    def _init_observability_engines(self) -> None:
+        with self.connect(self.files.agents) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS observatory_snapshots (
+                    id TEXT PRIMARY KEY,
+                    snapshot TEXT NOT NULL,
+                    health_score REAL NOT NULL,
+                    token_usage INTEGER NOT NULL,
+                    learning_progress REAL NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_evolution_events (
+                    id TEXT PRIMARY KEY,
+                    area TEXT NOT NULL,
+                    recommendation TEXT NOT NULL,
+                    before_state TEXT NOT NULL,
+                    after_state TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'proposed',
+                    metrics TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS action_explanations (
+                    id TEXT PRIMARY KEY,
+                    task TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    workflow_selection TEXT NOT NULL,
+                    agent_selection TEXT NOT NULL,
+                    skill_selection TEXT NOT NULL,
+                    tool_selection TEXT NOT NULL,
+                    risk_level TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS replay_events (
+                    id TEXT PRIMARY KEY,
+                    replay_type TEXT NOT NULL,
+                    reference_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS experiments (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    task TEXT NOT NULL,
+                    variants TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    winner TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS experiment_runs (
+                    id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    variant_name TEXT NOT NULL,
+                    variant_type TEXT NOT NULL,
+                    score REAL NOT NULL,
+                    metrics TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS knowledge_graph_facts (
+                    id TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    attributes TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS knowledge_graph_links (
+                    id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    relationship TEXT NOT NULL,
+                    attributes TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS autonomous_test_reports (
+                    id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL,
+                    test_plan TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    output_summary TEXT NOT NULL,
+                    regressions TEXT NOT NULL,
+                    performance_score REAL NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS commerce_requests (
+                    id TEXT PRIMARY KEY,
+                    user_intent TEXT NOT NULL,
+                    requirement_profile TEXT NOT NULL,
+                    product_candidates TEXT NOT NULL,
+                    ranked_recommendations TEXT NOT NULL,
+                    verification TEXT NOT NULL,
+                    approval_state TEXT NOT NULL,
+                    execution_state TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS booking_requests (
+                    id TEXT PRIMARY KEY,
+                    booking_type TEXT NOT NULL,
+                    user_intent TEXT NOT NULL,
+                    requirement_profile TEXT NOT NULL,
+                    options TEXT NOT NULL,
+                    ranked_recommendations TEXT NOT NULL,
+                    schedule_validation TEXT NOT NULL,
+                    conflict_analysis TEXT NOT NULL,
+                    verification TEXT NOT NULL,
+                    approval_state TEXT NOT NULL,
+                    execution_state TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS verification_audits (
+                    id TEXT PRIMARY KEY,
+                    action_type TEXT NOT NULL,
+                    action_id TEXT NOT NULL,
+                    checks TEXT NOT NULL,
+                    conflicts TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    approved INTEGER NOT NULL DEFAULT 0,
+                    irreversible INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS life_automation_plans (
+                    id TEXT PRIMARY KEY,
+                    automation_type TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    action_plan TEXT NOT NULL,
+                    approval_state TEXT NOT NULL,
+                    schedule TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS buying_intelligence_profiles (
+                    id TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    preferences TEXT NOT NULL,
+                    budget_patterns TEXT NOT NULL,
+                    brand_preferences TEXT NOT NULL,
+                    purchase_history TEXT NOT NULL,
+                    risk_tolerance TEXT NOT NULL,
+                    insights TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS concierge_plans (
+                    id TEXT PRIMARY KEY,
+                    concierge_type TEXT NOT NULL,
+                    user_intent TEXT NOT NULL,
+                    itinerary TEXT NOT NULL,
+                    recommendations TEXT NOT NULL,
+                    schedule TEXT NOT NULL,
+                    verification TEXT NOT NULL,
+                    approval_state TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS execution_bus_events (
+                    id TEXT PRIMARY KEY,
+                    request_type TEXT NOT NULL,
+                    service_plan TEXT NOT NULL,
+                    auth_requirements TEXT NOT NULL,
+                    execution_steps TEXT NOT NULL,
+                    monitoring TEXT NOT NULL,
+                    approval_state TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS action_platform_metrics (
+                    id TEXT PRIMARY KEY,
+                    metric_name TEXT NOT NULL,
+                    metric_value REAL NOT NULL,
+                    dimensions TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS universal_executions (
+                    id TEXT PRIMARY KEY,
+                    task TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    intent TEXT NOT NULL,
+                    execution_tree TEXT NOT NULL,
+                    verification TEXT NOT NULL,
+                    learning_update TEXT NOT NULL,
+                    dashboard_update TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    approved INTEGER NOT NULL DEFAULT 0,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS collaboration_questions (
+                    id TEXT PRIMARY KEY,
+                    task TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    issue_type TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    context TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS self_healing_events (
+                    id TEXT PRIMARY KEY,
+                    task TEXT NOT NULL,
+                    failure_type TEXT NOT NULL,
+                    root_cause TEXT NOT NULL,
+                    recovery_plan TEXT NOT NULL,
+                    validation TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS proactive_events (
+                    id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    recommendation TEXT NOT NULL,
+                    priority REAL NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS automation_plans (
+                    id TEXT PRIMARY KEY,
+                    task TEXT NOT NULL,
+                    surfaces TEXT NOT NULL,
+                    action_plan TEXT NOT NULL,
+                    required_permissions TEXT NOT NULL,
+                    approval_state TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cognitive_health_snapshots (
+                    id TEXT PRIMARY KEY,
+                    system_health REAL NOT NULL,
+                    prediction_confidence REAL NOT NULL,
+                    memory_efficiency REAL NOT NULL,
+                    agent_activity TEXT NOT NULL,
+                    tool_failures TEXT NOT NULL,
+                    execution_latency TEXT NOT NULL,
+                    workflow_efficiency TEXT NOT NULL,
+                    resource_consumption TEXT NOT NULL,
+                    hallucination_signals TEXT NOT NULL,
+                    learning_quality TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_observatory_created ON observatory_snapshots(created_at);
+                CREATE INDEX IF NOT EXISTS idx_self_evolution_area ON self_evolution_events(area, status);
+                CREATE INDEX IF NOT EXISTS idx_action_explanations_task ON action_explanations(task, created_at);
+                CREATE INDEX IF NOT EXISTS idx_replay_reference ON replay_events(replay_type, reference_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_experiments_name ON experiments(name, created_at);
+                CREATE INDEX IF NOT EXISTS idx_knowledge_facts_type ON knowledge_graph_facts(entity_type, name);
+                CREATE INDEX IF NOT EXISTS idx_knowledge_links_source ON knowledge_graph_links(source_id, relationship);
+                CREATE INDEX IF NOT EXISTS idx_autonomous_test_scope ON autonomous_test_reports(scope, created_at);
+                CREATE INDEX IF NOT EXISTS idx_commerce_status ON commerce_requests(status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_booking_type_status ON booking_requests(booking_type, status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_verification_action ON verification_audits(action_type, action_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_life_automation_status ON life_automation_plans(status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_buying_owner ON buying_intelligence_profiles(owner, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_concierge_type_status ON concierge_plans(concierge_type, status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_execution_bus_type ON execution_bus_events(request_type, created_at);
+                CREATE INDEX IF NOT EXISTS idx_action_metrics_name ON action_platform_metrics(metric_name, created_at);
+                CREATE INDEX IF NOT EXISTS idx_universal_executions_intent ON universal_executions(intent, status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_collaboration_status ON collaboration_questions(status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_self_healing_status ON self_healing_events(status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_proactive_events_status ON proactive_events(status, priority);
+                CREATE INDEX IF NOT EXISTS idx_automation_plans_status ON automation_plans(status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_cognitive_health_created ON cognitive_health_snapshots(created_at);
+                """
+            )
+
+    def _init_digital_twin(self) -> None:
+        with self.connect(self.files.agents) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS digital_twin_signals (
+                    id TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    attributes TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    source TEXT NOT NULL,
+                    usage_count INTEGER NOT NULL DEFAULT 1,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS digital_twin_profiles (
+                    id TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    model_summary TEXT NOT NULL,
+                    habits TEXT NOT NULL,
+                    preferences TEXT NOT NULL,
+                    goals TEXT NOT NULL,
+                    projects TEXT NOT NULL,
+                    learning_patterns TEXT NOT NULL,
+                    work_patterns TEXT NOT NULL,
+                    decision_history TEXT NOT NULL,
+                    execution_history TEXT NOT NULL,
+                    productivity_patterns TEXT NOT NULL,
+                    behavior_trends TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS future_simulations (
+                    id TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    scenarios TEXT NOT NULL,
+                    best_scenario TEXT NOT NULL,
+                    risk_heatmap TEXT NOT NULL,
+                    goal_forecast TEXT NOT NULL,
+                    decision_comparison TEXT NOT NULL,
+                    timeline_projection TEXT NOT NULL,
+                    behavior_trends TEXT NOT NULL,
+                    opportunity_prediction TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    context TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS predictive_recommendations (
+                    id TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    task TEXT NOT NULL,
+                    proactive_actions TEXT NOT NULL,
+                    risk_alerts TEXT NOT NULL,
+                    optimization_suggestions TEXT NOT NULL,
+                    goal_improvements TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    source_simulation_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_digital_twin_signals_owner ON digital_twin_signals(owner, signal_type, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_digital_twin_profiles_owner ON digital_twin_profiles(owner, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_future_simulations_owner ON future_simulations(owner, created_at);
+                CREATE INDEX IF NOT EXISTS idx_predictive_recommendations_owner ON predictive_recommendations(owner, status, created_at);
                 """
             )
 

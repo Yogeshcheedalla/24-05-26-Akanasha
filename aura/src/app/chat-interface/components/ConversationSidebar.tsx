@@ -134,7 +134,7 @@ export default function ConversationSidebar({
 
         setHistoryItems(items);
       })
-      .catch((err) => console.error('Failed to load sidebar history:', err));
+      .catch((err) => console.warn('Failed to load sidebar history:', err));
   }, []);
 
   useEffect(() => {
@@ -191,7 +191,7 @@ export default function ConversationSidebar({
       }
       toast.success('Conversation deleted');
     } catch (error) {
-      console.error('Failed to delete conversation:', error);
+      console.warn('[Akansha conversations] recovered delete failure:', error);
       toast.error(error instanceof Error ? error.message : 'Could not delete this conversation.');
     }
   };

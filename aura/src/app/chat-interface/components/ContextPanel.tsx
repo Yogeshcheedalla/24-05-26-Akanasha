@@ -23,7 +23,7 @@ import TaskCalendarPanel from './TaskCalendarPanel';
 interface ContextPanelProps {
   onClose: () => void;
   messageCount?: number;
-  tokenCount?: number;
+  contextUnits?: number;
 }
 
 const RAG_DOCS = [
@@ -43,7 +43,7 @@ interface MemoryItem {
 export default function ContextPanel({
   onClose,
   messageCount = 0,
-  tokenCount = 0,
+  contextUnits = 0,
 }: ContextPanelProps) {
   const [activeTab, setActiveTab] = useState<'memory' | 'planner' | 'rag' | 'context'>('memory');
   const [memoryExpanded, setMemoryExpanded] = useState(true);
@@ -66,7 +66,7 @@ export default function ContextPanel({
             );
           }
         })
-        .catch((err) => console.error('Failed to load memories:', err));
+        .catch((err) => console.warn('Failed to load memories:', err));
     };
 
     // Initial fetch
@@ -125,8 +125,8 @@ export default function ContextPanel({
       m.category.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const maxTokens = 128000;
-  const usagePercent = (tokenCount / maxTokens) * 100;
+  const maxContextUnits = 128000;
+  const usagePercent = (contextUnits / maxContextUnits) * 100;
 
   return (
     <div className="flex flex-col h-full">
@@ -435,9 +435,9 @@ export default function ContextPanel({
           <div className="space-y-4">
             <div className="p-3 rounded-xl bg-muted/50 border border-border">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-foreground">Token Usage</span>
+                <span className="text-xs font-medium text-foreground">Context Load</span>
                 <span className="text-xs font-mono tabular-nums text-muted-foreground">
-                  {tokenCount.toLocaleString()} / {(maxTokens / 1000).toFixed(0)}K
+                  {usagePercent.toFixed(1)}%
                 </span>
               </div>
               <div className="h-2 bg-muted rounded-full overflow-hidden">
@@ -447,7 +447,7 @@ export default function ContextPanel({
                 />
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                {usagePercent.toFixed(1)}% of context window used
+                Current conversation context loaded for memory-aware replies
               </p>
             </div>
 

@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.venv
+venv
+__pycache__
+*.pyc
+backend/hermes/database/*.db
+backend/hermes/database/*.db-*
+public/generated
+*.log
+.env
+.env.*

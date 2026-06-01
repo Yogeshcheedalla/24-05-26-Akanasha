@@ -88,7 +88,7 @@ export default function LoginForm({ onSwitchToSignup }: LoginFormProps) {
       }
       window.open(data.auth_url, '_blank', 'noopener,noreferrer');
     } catch (error) {
-      console.error('Failed to start Google sign-in:', error);
+      console.warn('Failed to start Google sign-in:', error);
       toast.error('Google uplink failure', { className: 'bg-black border-red-500 text-red-400 font-mono' });
     }
   };

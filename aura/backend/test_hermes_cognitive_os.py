@@ -2,15 +2,38 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from backend.hermes.action_platform import (
+    ActionPlatformMetrics,
+    AutonomousBookingEngine,
+    AutonomousCommerceEngine,
+    DigitalConciergeEngine,
+    LifeAutomationEngine,
+    MultiServiceExecutionBus,
+    PersonalBuyingIntelligence,
+    VerificationRecheckEngine,
+)
 from backend.hermes.agents.agent_factory import AgentFactory
 from backend.hermes.database.store import CognitiveStore, DatabaseFiles
 from backend.hermes.learning.experience_engine import ExperienceEngine
 from backend.hermes.learning.reflection_engine import ReflectionEngine
+from backend.hermes.goals.decision_simulation import DecisionSimulationEngine
+from backend.hermes.goals.executive_brain import DigitalExecutiveBrain
+from backend.hermes.goals.goal_graph import GoalGraphEngine
+from backend.hermes.goals.opportunity_detection import OpportunityDetectionEngine
+from backend.hermes.goals.personal_os import PersonalOperatingSystem
+from backend.hermes.goals.project_manager import AutonomousProjectManager
+from backend.hermes.evolution.self_evolution import SelfEvolutionEngine
+from backend.hermes.experiments.experiment_lab import AIExperimentLab
+from backend.hermes.explainability.explainable_ai import ExplainableAIEngine
+from backend.hermes.knowledge.knowledge_graph import KnowledgeGraphEngine
 from backend.hermes.memory.long_term import LongTermMemory
 from backend.hermes.memory.retrieval_engine import MemoryRetrievalEngine
+from backend.hermes.observatory.dashboard import CognitiveObservatoryDashboard
 from backend.hermes.orchestrator import HermesCognitiveOS
+from backend.hermes.replay.time_machine import TimeMachineReplayEngine
 from backend.hermes.safety.validator import SafetyValidator
 from backend.hermes.simulator import HermesSimulator
+from backend.hermes.testing.autonomous_testing import AutonomousTestingEngine
 from backend.hermes.agents.task_analyzer import TaskAnalyzerAgent
 from backend.hermes.agents.dynamic_hiring import DynamicHiringEngine
 from backend.hermes.agents.result_merger import ResultMerger
@@ -25,6 +48,7 @@ from backend.hermes.skills.skill_registry import SkillRegistry
 from backend.hermes.skills.skill_retirement import SkillRetirement
 from backend.hermes.skills.skill_validator import SkillValidator
 from backend.hermes.tools.universal_tool_layer import ToolSpec, UniversalToolLayer
+from backend.hermes.twin import CognitiveDigitalTwinEngine, FutureSimulationEngine, PredictiveRecommendationEngine
 from backend.hermes.ui.adaptive_ui import AdaptiveUIEngine
 from backend.hermes.workflows.workflow_generator import WorkflowGenerator
 from backend.hermes.world.world_model import WorldModelEngine
@@ -331,6 +355,8 @@ class HermesCognitiveOSTests(unittest.TestCase):
 
         self.assertEqual(engine.mode_for_task("debug the repo and run tests")["mode"], "coding")
         self.assertEqual(engine.mode_for_task("voice avatar lip sync is broken")["mode"], "voice")
+        self.assertEqual(engine.mode_for_task("build an AI startup in 6 months")["mode"], "startup")
+        self.assertEqual(engine.mode_for_task("create flashcards for my exam notes")["mode"], "learning")
         self.assertEqual(engine.mode_for_task("latest market report with charts")["mode"], "research")
         self.assertIn("primary_panels", engine.mode_for_task("create a business invoice report"))
 
@@ -417,6 +443,346 @@ class HermesCognitiveOSTests(unittest.TestCase):
         self.assertIn("predictive_assistant", result)
         self.assertIn("adaptive_ui", result)
         self.assertTrue(any(item["type"] == "accuracy_guard" for item in result["predictive_assistant"]["suggestions"]))
+        self.assertIn("executive_brain", result)
+        self.assertIn("explainable_ai", result)
+        self.assertIn("time_machine_replay", result)
+        self.assertIn("self_evolution", result)
+        self.assertIn("knowledge_graph", result)
+        self.assertIn("autonomous_testing", result)
+        self.assertIn("cognitive_observatory", result)
+
+    def test_goal_graph_decomposes_goal_and_prevents_circular_dependencies(self):
+        graph = GoalGraphEngine(self.store)
+        first = graph.create_goal(
+            "Build an AI startup in 6 months",
+            "Create milestones, MVP, go-to-market, validation, and learning loops.",
+            deadline="2026-11-21T00:00:00+00:00",
+        )
+        second = graph.create_goal("Prepare Akansha MVP launch", "Ship reliable voice, documents, memory, and web search.")
+
+        decomposition = graph.decompose_goal(first["id"])
+        dependency = graph.add_dependency(first["id"], second["id"])
+        details = graph.details(first["id"])
+
+        self.assertFalse(first["deduplicated"])
+        self.assertGreaterEqual(len(decomposition["tasks"]), 5)
+        self.assertGreaterEqual(len(decomposition["milestones"]), 5)
+        self.assertEqual(dependency["goal_id"], first["id"])
+        self.assertIn("progress", details)
+        with self.assertRaises(ValueError):
+            graph.add_dependency(second["id"], first["id"])
+
+    def test_autonomous_project_manager_tracks_progress_and_blockers(self):
+        graph = GoalGraphEngine(self.store)
+        manager = AutonomousProjectManager(self.store)
+        goal = graph.create_goal("Build mobile app", "Planning, UI, backend, database, testing, deployment")
+        plan = manager.create_execution_plan(goal["id"])
+        first_task_id = plan["sequence"][0]["task_id"]
+
+        updated = manager.update_task_status(first_task_id, "completed")
+        report = manager.progress_report(goal["id"])
+
+        self.assertEqual(plan["mode"], "coordinator_managed_goal_execution")
+        self.assertGreaterEqual(plan["task_count"], 5)
+        self.assertIn("CodingAgent", plan["agent_allocation"])
+        self.assertGreater(updated["goal_progress"]["progress"], 0)
+        self.assertTrue(report["next_tasks"])
+
+    def test_executive_brain_opportunities_decisions_and_personal_os(self):
+        brain = DigitalExecutiveBrain(self.store)
+        result = brain.intake_goal(
+            "Build an AI startup in 6 months",
+            "Research market, build MVP, launch, track blockers, and adapt weekly.",
+            deadline="2026-11-21T00:00:00+00:00",
+        )
+        goal_id = result["goal"]["id"]
+        opportunity = OpportunityDetectionEngine(self.store).detect(
+            ["Competitor released a new voice agent feature", "Deadline risk detected for MVP testing"],
+            goal_id=goal_id,
+        )
+        decision = DecisionSimulationEngine(self.store).simulate(
+            "Choose MVP strategy",
+            ["Launch small tested MVP quickly", "Build large complex platform first"],
+            {"resource_pressure": 0.6},
+        )
+        personal = PersonalOperatingSystem(self.store).classify_and_store(
+            "I usually create tests after writing code for Akansha projects."
+        )
+        progress = brain.progress_report(goal_id)
+
+        self.assertIn("executive_summary", result)
+        self.assertGreaterEqual(result["execution_plan"]["task_count"], 5)
+        self.assertEqual(opportunity["count"], 2)
+        self.assertEqual(decision["ranked_choices"][0]["choice"], "Launch small tested MVP quickly")
+        self.assertEqual(personal["item_type"], "project")
+        self.assertIn("progress", progress)
+
+    def test_goal_like_tasks_get_executive_brain_preview_without_persisting_goals(self):
+        os = HermesCognitiveOS(self.store)
+
+        result = os.process_task("Build an AI startup in 6 months with weekly milestones", approved=True)
+        stored_goals = os.goal_graph.list_goals()
+
+        self.assertEqual(result["analysis"]["intent"], "goal_management")
+        self.assertTrue(result["executive_brain"]["goal_like"])
+        self.assertEqual(result["executive_brain"]["recommended_mode"], "autonomous_goal_engine")
+        self.assertEqual(stored_goals, [])
+
+    def test_observatory_dashboard_reports_integrated_system_state(self):
+        os = HermesCognitiveOS(self.store)
+        os.goal_graph.create_goal("Launch Akansha observatory", "Track agents, memory, skills, and health.")
+        os.coordinator.ensure_core_agents()
+        os.workflow_generator.generate("research latest AI and create a cited report")
+
+        snapshot = CognitiveObservatoryDashboard(self.store).snapshot({"counters": {"test": 1}})
+
+        self.assertIn("active_goals", snapshot)
+        self.assertIn("memory_usage", snapshot)
+        self.assertIn("task_execution_graph", snapshot)
+        self.assertIn("system_health", snapshot)
+        self.assertIn("token_usage", snapshot)
+        self.assertGreaterEqual(snapshot["system_health"]["score"], 0)
+        self.assertGreaterEqual(len(snapshot["active_agents"]), 1)
+
+    def test_self_evolution_explainability_and_replay_are_auditable(self):
+        analysis = TaskAnalyzerAgent().analyze("generate PDF report and verify links").to_dict()
+        workflow = WorkflowGenerator(self.store).generate("generate PDF report and verify links")
+        hiring = DynamicHiringEngine().hiring_plan(analysis)
+        skills = ["PDFGenerationSkill", "WorkflowOptimizerSkill"]
+        tools = UniversalToolLayer(self.store).plan_for_task("generate PDF report", ["artifact_generation"], approved=True)
+
+        explanation = ExplainableAIEngine(self.store).explain_action(
+            "generate PDF report and verify links",
+            analysis,
+            workflow,
+            hiring,
+            skills,
+            tools,
+        )
+        replay = TimeMachineReplayEngine(self.store).record("workflow", workflow["id"], {"explanation": explanation["id"]}, 0.82)
+        timeline = TimeMachineReplayEngine(self.store).replay("workflow", workflow["id"])
+        evolution = SelfEvolutionEngine(self.store).optimize("generate PDF report and verify links")
+
+        self.assertIn("reason", explanation)
+        self.assertEqual(replay["reference_id"], workflow["id"])
+        self.assertEqual(timeline["count"], 1)
+        self.assertEqual(len(evolution["events"]), 5)
+        self.assertEqual(evolution["policy"], "validation_required_before_promotion")
+
+    def test_experiment_lab_scores_variants_and_selects_winner(self):
+        lab = AIExperimentLab(self.store)
+
+        result = lab.run_experiment(
+            "PDF workflow A/B",
+            "Generate a verified PDF",
+            [
+                {"name": "fast", "type": "workflow", "steps": ["generate"], "agents": ["FileAgent"]},
+                {
+                    "name": "verified",
+                    "type": "workflow",
+                    "steps": ["generate", "validate file", "test link", "rollback on failure"],
+                    "agents": ["FileAgent", "TestingAgent", "QualityAgent"],
+                },
+            ],
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["winner"]["variant_name"], "verified")
+        self.assertGreaterEqual(result["confidence"], 0.55)
+
+    def test_knowledge_graph_mirrors_entities_into_world_model(self):
+        graph = KnowledgeGraphEngine(self.store)
+        user = graph.upsert_entity("user", "Yogesh", {"role": "owner"}, 0.95)
+        project = graph.upsert_entity("project", "Akansha", {"kind": "AI operating system"}, 0.9)
+        link = graph.link(user["id"], project["id"], "owns", {"source": "test"}, 0.9)
+        snapshot = graph.graph()
+
+        self.assertEqual(link["relationship"], "owns")
+        self.assertEqual(len(snapshot["entities"]), 2)
+        self.assertGreaterEqual(len(snapshot["world_model_projection"]["nodes"]), 2)
+
+    def test_autonomous_testing_engine_plans_records_and_compares_reports(self):
+        engine = AutonomousTestingEngine(self.store)
+        plan = engine.generate_test_plan(
+            "cognitive_os",
+            ["backend/hermes/api/routes.py", "backend/hermes/database/store.py"],
+            "verify observatory APIs",
+        )
+        first = engine.record_report("cognitive_os", plan, "python -m unittest backend.test_hermes_cognitive_os", "passed", "81 tests OK")
+        second = engine.record_report(
+            "cognitive_os",
+            plan,
+            "python -m unittest backend.test_hermes_cognitive_os",
+            "failed",
+            "1 regression detected",
+            ["api_contract_tests_failed"],
+        )
+        comparison = engine.compare_results(first["id"], second["id"])
+
+        self.assertIn("schema_integrity", plan["checks"])
+        self.assertFalse(comparison["improved"])
+        self.assertIn("api_contract_tests_failed", comparison["regressions"])
+
+    def test_autonomous_commerce_engine_ranks_products_and_requires_approval(self):
+        commerce = AutonomousCommerceEngine(self.store)
+        result = commerce.plan(
+            "Buy best wireless headphones under $150 with strong battery and fast delivery",
+            candidates=[
+                {
+                    "name": "LongBattery Pro",
+                    "price": 129,
+                    "rating": 4.6,
+                    "review_score": 0.88,
+                    "quality_score": 0.86,
+                    "delivery_days": 2,
+                    "historical_price_delta": -0.08,
+                    "sources": ["official-store", "trusted-review"],
+                },
+                {
+                    "name": "CheapBass Lite",
+                    "price": 79,
+                    "rating": 4.0,
+                    "review_score": 0.7,
+                    "quality_score": 0.62,
+                    "delivery_days": 6,
+                    "sources": ["marketplace"],
+                },
+            ],
+            approved=False,
+        )
+
+        self.assertEqual(result["requirement_profile"]["category"], "audio")
+        self.assertEqual(result["ranked_recommendations"][0]["name"], "LongBattery Pro")
+        self.assertEqual(result["approval_state"], "requires_owner_approval")
+        self.assertFalse(result["verification"]["allowed_to_execute"])
+        self.assertIn("ShoppingSkill", HermesCognitiveOS(self.store).process_task("buy wireless headphones under 150")["skill_routes"])
+
+    def test_booking_life_concierge_and_execution_bus_are_governed(self):
+        booking = AutonomousBookingEngine(self.store).plan(
+            "Book a restaurant table tomorrow 8 pm under ₹2000",
+            options=[
+                {
+                    "title": "Quiet Table Downtown",
+                    "price": 1800,
+                    "rating": 4.5,
+                    "schedule_fit": 0.92,
+                    "cancellation_score": 0.8,
+                    "duration_minutes": 90,
+                    "sources": ["restaurant-official"],
+                }
+            ],
+            approved=False,
+        )
+        life = LifeAutomationEngine(self.store).plan("Create an alert tomorrow at 7 am for exam revision")
+        concierge = DigitalConciergeEngine(self.store).plan("Plan a birthday gift recommendation under ₹3000")
+        bus = MultiServiceExecutionBus(self.store).plan("booking", {"booking_request_id": booking["id"]}, approved=False)
+
+        self.assertEqual(booking["booking_type"], "restaurant")
+        self.assertEqual(booking["approval_state"], "requires_owner_approval")
+        self.assertEqual(life["automation_type"], "reminder")
+        self.assertEqual(concierge["concierge_type"], "gift")
+        self.assertEqual(bus["approval_state"], "requires_owner_approval")
+        self.assertFalse(bus["result"]["safety"]["allowed"])
+
+    def test_verification_buying_profile_metrics_and_observatory_include_action_platform(self):
+        profile = PersonalBuyingIntelligence(self.store).update_preferences(
+            "Yogesh",
+            {"favorite_audio_brands": ["Sony"], "tradeoff": "battery_over_lowest_price"},
+        )
+        verification = VerificationRecheckEngine(self.store).verify(
+            "purchase",
+            "purchase-test",
+            {"candidates": [{"name": "Verified item", "price": 100, "sources": ["official"]}]},
+            approved=True,
+        )
+        metrics = ActionPlatformMetrics(self.store).snapshot()
+        observatory = CognitiveObservatoryDashboard(self.store).snapshot()
+
+        self.assertIn("Sony", profile["preferences"]["favorite_audio_brands"])
+        self.assertTrue(verification["allowed_to_execute"])
+        self.assertIn("dashboard_metrics", metrics)
+        self.assertIn("action_platform", observatory)
+
+    def test_orchestrator_integrates_action_platform_without_standalone_system(self):
+        os = HermesCognitiveOS(self.store)
+        commerce = os.process_task("Buy the best wireless headphones under $150 after comparing reviews and delivery")
+        booking = os.process_task("Book a hotel for tomorrow and check calendar conflicts")
+        life = os.process_task("Set a reminder tomorrow morning to pay the electricity bill")
+
+        self.assertEqual(commerce["analysis"]["intent"], "commerce")
+        self.assertTrue(commerce["action_platform"]["active"])
+        self.assertIn("commerce", commerce["action_platform"])
+        self.assertEqual(booking["analysis"]["intent"], "booking")
+        self.assertIn("booking", booking["action_platform"])
+        self.assertEqual(life["analysis"]["intent"], "life_automation")
+        self.assertIn("life_automation", life["action_platform"])
+        self.assertIn("action_platform", os.process_task("hello")["cognitive_observatory"])
+
+    def test_universal_operating_system_pauses_recovers_and_updates_health(self):
+        os = HermesCognitiveOS(self.store)
+        result = os.process_task(
+            "Buy the best laptop under 50000 tomorrow, login may be expired, and continue only after I approve"
+        )
+
+        self.assertEqual(result["analysis"]["intent"], "commerce")
+        self.assertIn(result["universal_execution"]["status"], {"waiting_for_user_input", "blocked_for_approval"})
+        self.assertTrue(result["uncertainty_collaboration"]["needs_user_input"])
+        self.assertIn("question", result["uncertainty_collaboration"])
+        self.assertEqual(result["self_healing"]["status"], "recovery_plan_ready")
+        self.assertGreaterEqual(result["proactive_events"]["count"], 1)
+        self.assertTrue(result["universal_automation"]["action_plan"]["approval_required"])
+        self.assertIn("api", result["universal_automation"]["surfaces"])
+        self.assertGreaterEqual(result["cognitive_health"]["system_health"], 0.0)
+        self.assertLessEqual(result["cognitive_health"]["system_health"], 1.0)
+
+        pending = os.uncertainty_collaboration.pending()
+        resolved = os.uncertainty_collaboration.resolve(
+            pending[0]["id"],
+            "Prioritize battery life and wait for my approval.",
+        )
+
+        self.assertEqual(resolved["status"], "resolved")
+        self.assertIn("user_input", resolved["context"])
+
+    def test_digital_twin_future_simulation_and_recommendations_are_integrated(self):
+        twin = CognitiveDigitalTwinEngine(self.store)
+        analysis = TaskAnalyzerAgent().analyze("I usually delay testing but I want to launch my AI startup in 6 months").to_dict()
+        observed = twin.observe_task("I usually delay testing but I want to launch my AI startup in 6 months", analysis)
+        simulation = FutureSimulationEngine(self.store).simulate(
+            "I want to launch my AI startup",
+            owner="Yogesh",
+            context={"complexity_score": analysis["complexity_score"], "resource_pressure": 0.7},
+        )
+        recommendations = PredictiveRecommendationEngine(self.store).recommend(
+            "I want to launch my AI startup",
+            observed["profile"],
+            simulation,
+            analysis,
+        )
+
+        self.assertTrue(any(signal["signal_type"] == "habit" for signal in observed["observed_signals"]))
+        self.assertTrue(any(signal["signal_type"] == "goal" for signal in observed["observed_signals"]))
+        self.assertIn("Build MVP first", [item["scenario"] for item in simulation["scenarios"]])
+        self.assertIn("risk_heatmap", simulation)
+        self.assertIn("timeline_projection", simulation)
+        self.assertGreaterEqual(simulation["best_scenario"]["success_probability"], 0.0)
+        self.assertTrue(recommendations["proactive_actions"])
+        self.assertTrue(any("milestones" in item.get("action", "").lower() for item in recommendations["proactive_actions"]))
+
+    def test_orchestrator_and_observatory_expose_digital_twin_predictions(self):
+        os = HermesCognitiveOS(self.store)
+        result = os.process_task("Schedule work for this week and move testing earlier because I usually delay it", approved=True)
+        snapshot = CognitiveObservatoryDashboard(self.store).snapshot(os.metrics.snapshot())
+
+        self.assertIn("digital_twin", result)
+        self.assertIn("future_simulation", result)
+        self.assertIn("predictive_recommendations", result)
+        self.assertTrue(result["future_simulation"]["decision_comparison"])
+        self.assertTrue(result["predictive_recommendations"]["optimization_suggestions"])
+        self.assertIn("digital_twin", snapshot)
+        self.assertTrue(snapshot["digital_twin"]["future_predictions"])
+        self.assertTrue(snapshot["digital_twin"]["risk_heatmaps"])
+
 
 
 if __name__ == "__main__":

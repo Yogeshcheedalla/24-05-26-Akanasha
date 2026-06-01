@@ -410,7 +410,7 @@ export default function ConversationHistoryScreen() {
         return liveConversations.find((conversation) => conversation.id === current.id) ?? liveConversations[0] ?? null;
       });
     } catch (error) {
-      console.error('Failed to load conversation history:', error);
+      console.warn('Failed to load conversation history:', error);
       setConversations([]);
       setSelectedConversation(null);
     } finally {
@@ -464,7 +464,7 @@ export default function ConversationHistoryScreen() {
         window.dispatchEvent(new CustomEvent('akansha-history-updated'));
         toast.success(`${ids.length} conversation${ids.length > 1 ? 's' : ''} deleted`);
       } catch (error) {
-        console.error('Failed to delete history:', error);
+        console.warn('Failed to delete history:', error);
         toast.error(error instanceof Error ? error.message : 'Could not delete history.');
       }
     },
@@ -492,7 +492,7 @@ export default function ConversationHistoryScreen() {
       window.dispatchEvent(new CustomEvent('akansha-history-updated'));
       toast.success('Chat history cleared');
     } catch (error) {
-      console.error('Failed to clear chat history:', error);
+      console.warn('Failed to clear chat history:', error);
       toast.error(error instanceof Error ? error.message : 'Could not clear chat history.');
     }
   }, []);

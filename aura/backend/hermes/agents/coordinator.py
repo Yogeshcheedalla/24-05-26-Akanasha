@@ -22,6 +22,9 @@ DEFAULT_AGENT_TOOLS = {
     "AutomationAgent": ["desktop_control"],
     "DataAgent": ["tables", "files"],
     "FileAgent": ["filesystem", "artifact_generation"],
+    "ShoppingAgent": ["commerce_search", "product_compare", "price_history", "approval_gate"],
+    "BookingAgent": ["booking_search", "calendar_check", "availability_recheck", "approval_gate"],
+    "ConciergeAgent": ["travel_planning", "meeting_coordination", "gift_recommendations", "schedule_optimization"],
 }
 
 WORKER_SPECIALIZATION_BY_AGENT = {
@@ -32,6 +35,9 @@ WORKER_SPECIALIZATION_BY_AGENT = {
     "BrowserAgent": "AutomationWorker",
     "DataAgent": "AnalysisWorker",
     "TestingAgent": "DebugWorker",
+    "ShoppingAgent": "ResearchWorker",
+    "BookingAgent": "AutomationWorker",
+    "ConciergeAgent": "PlanningWorker",
 }
 
 
@@ -95,6 +101,18 @@ class Coordinator:
             "live_research": ["DeepResearchSkill", "NewsIntelligenceSkill"],
             "automation": ["BrowserAutomationSkill", "VoiceCommandSkill"],
             "coding": ["AutonomousDebugSkill", "CodeReviewSkill", "GitDeploySkill"],
+            "goal_management": ["TaskPlanningSkill", "WorkflowOptimizerSkill", "MemoryCompressionSkill", "DeepResearchSkill"],
+            "commerce": ["ShoppingSkill", "ProductComparisonSkill", "VerificationSkill", "WorkflowOptimizerSkill"],
+            "booking": ["BookingSkill", "ScheduleValidationSkill", "VerificationSkill", "WorkflowOptimizerSkill"],
+            "life_automation": ["ReminderSkill", "LifeAutomationSkill", "WorkflowOptimizerSkill"],
+            "concierge": ["ConciergeSkill", "TaskPlanningSkill", "VerificationSkill", "WorkflowOptimizerSkill"],
+            "education": ["StudyPlanSkill", "QuizGenerationSkill", "PDFGenerationSkill", "WorkflowOptimizerSkill"],
+            "communication": ["EmailSkill", "FollowUpSkill", "VerificationSkill", "WorkflowOptimizerSkill"],
+            "data_processing": ["SpreadsheetAnalysisSkill", "DataCleaningSkill", "WorkflowOptimizerSkill"],
+            "media": ["VideoSummarySkill", "ImageAnalysisSkill", "PresentationBuilderSkill", "WorkflowOptimizerSkill"],
+            "file_management": ["FileOrganizationSkill", "VerificationSkill", "WorkflowOptimizerSkill"],
+            "api_workflow": ["APIWorkflowSkill", "AutonomousDebugSkill", "TestingSkill", "WorkflowOptimizerSkill"],
+            "system_management": ["SystemHealthSkill", "AutomationSkill", "VerificationSkill", "WorkflowOptimizerSkill"],
             "conversation": ["MemoryCompressionSkill", "WorkflowOptimizerSkill"],
         }
         routed = list(mapping.get(intent, ["WorkflowOptimizerSkill"]))

@@ -10,6 +10,11 @@ node_modules/
 .env
 .env.*
 !.env.example
+*.key
+*.pem
+*.secret
+secrets/
+private/
 
 # Build and framework output
 .next/
@@ -84,6 +89,9 @@ tmp_voice_recording_frames/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
 .venv/
 venv/
 
@@ -96,6 +104,9 @@ playwright-report/
 # Temporary generated artifacts
 generated_artifacts/
 tmp_*/
+*.tmp
+*.temp
+*.bak
 codechef-login.html
 tmp-chat.html
 debug_prompt.txt

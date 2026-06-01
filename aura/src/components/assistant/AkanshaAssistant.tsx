@@ -338,10 +338,6 @@ function extractSpeakerIntro(text: string) {
 
   let relationship = relationshipMatch?.[1]?.toLowerCase() ?? null;
   relationship = relationship ? SPEAKER_RELATIONSHIP_ALIASES[relationship] || relationship : null;
-  if (displayName && /yogesh/i.test(displayName)) {
-    relationship = 'owner';
-  }
-
   return {
     displayName: displayName ? displayName.replace(/\s+/g, ' ').trim() : null,
     relationship,
@@ -357,7 +353,7 @@ function speakerAccessLabel(accessLevel: SpeakerAccessLevel) {
 function buildSpeakerContextProfile(relationship: string | null, inputMode: 'voice' | 'text') {
   const normalized = relationship || 'guest';
   const base = {
-    owner: 'Yogesh',
+    owner: 'the owner',
     onboarding_source: inputMode,
     expected_behavior: 'Relationship-aware, emotionally natural, privacy-safe conversation.',
   };
@@ -465,7 +461,7 @@ function buildAssistantSpeakerPayload(
   }
 
   return {
-    display_name: fallbackName || 'Yogesh',
+    display_name: fallbackName || 'the owner',
     relationship_to_owner: 'owner',
     access_level: 'owner',
     closeness_level: 'close',
@@ -662,7 +658,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       setBackgroundListening(profileData.profile.background_listening);
       setGoogleStatus(googleData);
     } catch (error) {
-      console.error('Failed to load assistant profile:', error);
+      console.warn('Failed to load assistant profile:', error);
       toast.error('Could not load Akansha preferences');
     } finally {
       setLoadingProfile(false);
@@ -692,7 +688,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         }
       }
     } catch (error) {
-      console.error('Failed to load speaker profiles:', error);
+      console.warn('Failed to load speaker profiles:', error);
     }
   }, []);
 
@@ -711,7 +707,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       const data: SocialInboxResponse = await res.json();
       setSocialInbox(data);
     } catch (error) {
-      console.error('Failed to load social inbox:', error);
+      console.warn('Failed to load social inbox:', error);
       setSocialInbox(SOCIAL_INBOX_FALLBACK);
     } finally {
       setSocialLoading(false);
@@ -887,7 +883,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       const data: ProfileResponse = await res.json();
       setProfile(data.profile);
     } catch (error) {
-      console.error('Failed to save profile:', error);
+      console.warn('Failed to save profile:', error);
     }
   }, []);
 
@@ -971,7 +967,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           language_preference: voiceLanguage,
           notes: `Voice onboarding from ${inputMode} mode`,
           context_profile: buildSpeakerContextProfile(intro.relationship, inputMode),
-          conversation_summary: `${displayName} introduced themselves as ${intro.relationship || 'connected to Yogesh'}. Keep replies consistent with that relationship.`,
+          conversation_summary: `${displayName} introduced themselves as ${intro.relationship || 'connected to the owner'}. Keep replies consistent with that relationship.`,
           mood_state: 'neutral',
           last_heard_text: intro.sampleText || '',
           voice_signature: buildVoiceSignature(
@@ -1078,7 +1074,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         activeSpeakerRef.current = null;
         setActiveSpeaker(null);
         const introPrompt =
-          'Who are you? I am listening to a different voice for the first time. Tell me your name and your relationship to Yogesh so I can set the correct limits.';
+          'Who are you? I am listening to a different voice for the first time. Tell me your name and your relationship to the owner so I can set the correct limits.';
         setAwaitingSpeakerIntro(true);
         setPendingSpeakerIntro({ displayName: null, relationship: null, sampleText: trimmed });
         setAssistantEmotion('thinking');
@@ -1116,7 +1112,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         }
 
         if (!nextIntro.relationship) {
-          const followUp = `Thanks ${nextIntro.displayName}. Now tell me your relationship to Yogesh, like mother, father, friend, or owner.`;
+          const followUp = `Thanks ${nextIntro.displayName}. Now tell me your relationship to the owner, like mother, father, friend, or owner.`;
           setPendingSpeakerIntro(nextIntro);
           setAssistantEmotion('thinking');
           setResponseText(followUp);
@@ -1134,7 +1130,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           setAwaitingSpeakerIntro(false);
           setPendingSpeakerIntro(null);
 
-          const confirmation = `Nice to meet you, ${nextSpeaker.display_name}. I will remember that you are ${nextSpeaker.relationship_to_owner ?? 'connected to Yogesh'} and I will respond with ${speakerAccessLabel(nextSpeaker.access_level)}.`;
+          const confirmation = `Nice to meet you, ${nextSpeaker.display_name}. I will remember that you are ${nextSpeaker.relationship_to_owner ?? 'connected to the owner'} and I will respond with ${speakerAccessLabel(nextSpeaker.access_level)}.`;
           setAssistantEmotion('happy');
           setResponseText(confirmation);
           void speak(confirmation, {
@@ -1145,7 +1141,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           });
           return;
         } catch (error) {
-          console.error('Failed to save voice speaker:', error);
+          console.warn('Failed to save voice speaker:', error);
           const fallback =
             'I could not save your voice profile just now. Please try your introduction once more.';
           setAssistantEmotion('thinking');
@@ -1193,7 +1189,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           }
 
           if (!nextIntro.relationship) {
-            const followUp = `Thanks ${nextIntro.displayName}. Now tell me your relationship to Yogesh, like mother, father, friend, or owner.`;
+            const followUp = `Thanks ${nextIntro.displayName}. Now tell me your relationship to the owner, like mother, father, friend, or owner.`;
             setAwaitingSpeakerIntro(true);
             setPendingSpeakerIntro(nextIntro);
             setAssistantEmotion('thinking');
@@ -1211,7 +1207,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
             const nextSpeaker = await saveSpeakerProfile(nextIntro, inputMode);
             setAwaitingSpeakerIntro(false);
             setPendingSpeakerIntro(null);
-            const confirmation = `Nice to meet you, ${nextSpeaker.display_name}. I will remember that you are ${nextSpeaker.relationship_to_owner ?? 'connected to Yogesh'} and I will respond with ${speakerAccessLabel(nextSpeaker.access_level)}.`;
+            const confirmation = `Nice to meet you, ${nextSpeaker.display_name}. I will remember that you are ${nextSpeaker.relationship_to_owner ?? 'connected to the owner'} and I will respond with ${speakerAccessLabel(nextSpeaker.access_level)}.`;
             setAssistantEmotion('happy');
             setResponseText(confirmation);
             void speak(confirmation, {
@@ -1222,7 +1218,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
             });
             return;
           } catch (error) {
-            console.error('Failed to save voice speaker:', error);
+            console.warn('Failed to save voice speaker:', error);
             const fallback =
               'I understood your introduction, but I could not save your voice profile just now. Please try once more.';
             setAwaitingSpeakerIntro(true);
@@ -1240,7 +1236,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         }
 
         // Default normal app sessions to the owner profile. Only ask identity when
-        // the speaker explicitly starts an introduction, so Yogesh is not challenged
+        // the speaker explicitly starts an introduction, so the owner is not challenged
         // repeatedly during the same conversation.
       }
 
@@ -1260,8 +1256,8 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       if (speakerNeedsOwnerApproval) {
         const limitationMessage =
           currentSpeaker?.access_level === 'trusted'
-            ? `${currentSpeaker.display_name}, I heard you. Because you are using trusted access, I can chat and guide you, but device automation, social sending, or delete actions still need Yogesh's voice or chat approval.`
-            : `${currentSpeaker?.display_name}, I can talk with you, but I cannot run protected actions until Yogesh approves or speaks as the owner.`;
+            ? `${currentSpeaker.display_name}, I heard you. Because you are using trusted access, I can chat and guide you, but device automation, social sending, or delete actions still need the owner's voice or chat approval.`
+            : `${currentSpeaker?.display_name}, I can talk with you, but I cannot run protected actions until the owner approves or speaks as the owner.`;
         setAssistantEmotion('thinking');
         setResponseText(limitationMessage);
         void speak(limitationMessage, {
@@ -1433,7 +1429,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
           setTypedMessage('');
           return;
         } catch (error) {
-          console.error('Voice automation failed:', error);
+          console.warn('Voice automation failed:', error);
           const fallback =
             'I tried to run that automation command, but the automation service was unavailable.';
           setAssistantEmotion('thinking');
@@ -1618,9 +1614,13 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         if (controller.signal.aborted) {
           return;
         }
-        console.error('Voice assistant stream failed:', error);
-        const fallback =
-          "I'm sorry - the real-time channel dropped. Please check that the Python backend is running and OpenRouter is configured.";
+        console.warn('Voice assistant stream failed:', error);
+        const message = error instanceof Error ? error.message : String(error);
+        const fallback = /timeout|timed out/i.test(message)
+          ? 'That response took too long, so I stopped it and kept voice ready. Please say it once more.'
+          : /401|auth|authentication|openrouter|api key/i.test(message)
+            ? 'The AI provider key is not active in the running backend. Check C:\\MY-AI\\aura\\.env and restart the backend.'
+            : 'The real-time channel had a temporary issue. I kept listening, so you can try again.';
         setResponseText(fallback);
         toast.error('Akansha could not finish that response');
       } finally {
@@ -1666,7 +1666,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       }
       window.open(data.auth_url, '_blank', 'noopener,noreferrer');
     } catch (error) {
-      console.error('Failed to initialize Google auth:', error);
+      console.warn('Failed to initialize Google auth:', error);
       toast.error('Could not start Google sign-in');
     }
   }, []);
@@ -1678,7 +1678,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       const data: GmailSummaryResponse = await res.json();
       setGmailSummary(data);
     } catch (error) {
-      console.error('Failed to load Gmail summary:', error);
+      console.warn('Failed to load Gmail summary:', error);
       toast.error('Could not fetch Gmail summary');
     } finally {
       setLoadingGoogleAction(null);
@@ -1692,7 +1692,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
       const data: CalendarResponse = await res.json();
       setCalendarState(data);
     } catch (error) {
-      console.error('Failed to load Calendar events:', error);
+      console.warn('Failed to load Calendar events:', error);
       toast.error('Could not fetch calendar events');
     } finally {
       setLoadingGoogleAction(null);
@@ -1715,7 +1715,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         toast.success(`${platform} linked to Akansha`);
         await loadSocialInbox();
       } catch (error) {
-        console.error(`Failed to connect ${platform}:`, error);
+        console.warn(`Failed to connect ${platform}:`, error);
         toast.error(`Could not connect ${platform}`);
       } finally {
         setConnectingPlatform(null);
@@ -1754,7 +1754,7 @@ export function AkanshaAssistant({ sessionId = 'voice-default' }: { sessionId?: 
         toast.success(`Reply approved for ${message.sender}`);
         await loadSocialInbox();
       } catch (error) {
-        console.error('Failed to send approved reply:', error);
+        console.warn('Failed to send approved reply:', error);
         toast.error('Reply could not be sent');
       } finally {
         setSendingReplyId(null);

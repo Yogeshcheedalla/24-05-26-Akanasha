@@ -38,6 +38,15 @@ class UniversalToolLayer:
             ToolSpec("Desktop Automation", "desktop", ["app_control", "window_control", "notifications"], True, "critical"),
             ToolSpec("Hermes Database", "database", ["memory_read", "skill_read", "audit_write"], False, "medium"),
             ToolSpec("Plugin Runtime", "plugin", ["documents", "spreadsheets", "presentations"], False, "medium"),
+            ToolSpec("Shopping Services Gateway", "api", ["commerce_search", "product_compare", "price_history", "review_analysis"], False, "medium"),
+            ToolSpec("Booking Services Gateway", "api", ["booking_search", "availability_recheck", "schedule_validation"], False, "medium"),
+            ToolSpec("Calendar and Email Connector", "plugin", ["calendar_check", "email_summary", "follow_up"], True, "high"),
+            ToolSpec("Payment Guard", "api", ["payment_precheck", "fraud_detection", "approval_gate"], True, "critical"),
+            ToolSpec("Maps and Local Services", "api", ["maps", "distance_estimate", "restaurant_lookup"], False, "medium"),
+            ToolSpec("Education Builder", "plugin", ["notes", "quiz", "flashcards", "study_plan", "formula_sheet"], False, "medium"),
+            ToolSpec("Data Processing Runtime", "plugin", ["data_analysis", "tables", "charts", "csv", "xlsx"], False, "medium"),
+            ToolSpec("Multimodal Analyzer", "plugin", ["multimodal_context", "image_analysis", "video_summary", "audio_transcription"], False, "medium"),
+            ToolSpec("API Workflow Gateway", "api", ["api_gateway", "webhook", "endpoint_validation", "integration"], True, "high"),
         ]
         return [self.register_tool(spec) for spec in defaults]
 
@@ -145,6 +154,29 @@ class UniversalToolLayer:
             return True
         if {"repo_read", "tests"} & required_tools and tool["kind"] in {"database", "plugin"}:
             return True
+        if "memory_recall" in required_tools and tool["kind"] == "database":
+            return True
+        if "data_analysis" in required_tools and "data_analysis" in capabilities:
+            return True
+        if "multimodal_context" in required_tools and "multimodal_context" in capabilities:
+            return True
+        if "api_gateway" in required_tools and "api_gateway" in capabilities:
+            return True
+        if {"commerce_search", "verification_recheck", "booking_search", "calendar_check", "life_automation", "concierge", "approval_gate"} & required_tools:
+            if "commerce_search" in required_tools and "commerce_search" in capabilities:
+                return True
+            if "booking_search" in required_tools and "booking_search" in capabilities:
+                return True
+            if "verification_recheck" in required_tools and {"validation", "availability_recheck", "fraud_detection"} & capabilities:
+                return True
+            if "calendar_check" in required_tools and "calendar_check" in capabilities:
+                return True
+            if "life_automation" in required_tools and {"notifications", "email_summary", "calendar_check"} & capabilities:
+                return True
+            if "concierge" in required_tools and {"maps", "calendar_check", "restaurant_lookup"} & capabilities:
+                return True
+            if "approval_gate" in required_tools and "approval_gate" in capabilities:
+                return True
         return tool["kind"] in lowered
 
     def _decode(self, row: Any) -> dict[str, Any]:

@@ -11,7 +11,7 @@ export default function VoiceAssistantError({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error('Voice assistant route error:', error);
+    console.warn('Voice assistant route error:', error);
   }, [error]);
 
   return (

@@ -1,41 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { Menu, Bell, Sun, Moon, Monitor, ChevronDown, Zap } from 'lucide-react';
 import { useTheme } from './ThemeProvider';
-import Icon from '@/components/ui/AppIcon';
-
-const TOKEN_USAGE_STORAGE_KEY = 'akansha-token-usage';
-const MAX_CONTEXT_TOKENS = 128000;
-
-type TokenUsage = {
-  tokens: number;
-  maxTokens: number;
-};
-
-function readTokenUsage(): TokenUsage {
-  if (typeof window === 'undefined') {
-    return { tokens: 0, maxTokens: MAX_CONTEXT_TOKENS };
-  }
-
-  try {
-    const stored = window.localStorage.getItem(TOKEN_USAGE_STORAGE_KEY);
-    if (!stored) return { tokens: 0, maxTokens: MAX_CONTEXT_TOKENS };
-    const parsed = JSON.parse(stored) as Partial<TokenUsage>;
-    return {
-      tokens: Math.max(0, Number(parsed.tokens) || 0),
-      maxTokens: Math.max(1, Number(parsed.maxTokens) || MAX_CONTEXT_TOKENS),
-    };
-  } catch {
-    return { tokens: 0, maxTokens: MAX_CONTEXT_TOKENS };
-  }
-}
-
-function formatTokenLimit(value: number) {
-  if (value >= 1000) return `${Math.round(value / 1000)}k`;
-  return value.toLocaleString();
-}
-
 
 interface TopbarProps {
   onMobileMenuOpen: () => void;
@@ -45,7 +12,6 @@ interface TopbarProps {
 export default function Topbar({ onMobileMenuOpen }: TopbarProps) {
   const { theme, setTheme } = useTheme();
   const [themeMenuOpen, setThemeMenuOpen] = React.useState(false);
-  const [tokenUsage, setTokenUsage] = React.useState<TokenUsage>(() => readTokenUsage());
 
   const themeOptions = [
     { key: 'theme-light', value: 'light' as const, icon: Sun, label: 'Light' },
@@ -55,28 +21,6 @@ export default function Topbar({ onMobileMenuOpen }: TopbarProps) {
 
   const currentThemeIcon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
   const CurrentIcon = currentThemeIcon;
-
-  React.useEffect(() => {
-    const updateUsage = (event?: Event) => {
-      const customDetail = (event as CustomEvent<TokenUsage> | undefined)?.detail;
-      if (customDetail) {
-        setTokenUsage({
-          tokens: Math.max(0, Number(customDetail.tokens) || 0),
-          maxTokens: Math.max(1, Number(customDetail.maxTokens) || MAX_CONTEXT_TOKENS),
-        });
-        return;
-      }
-      setTokenUsage(readTokenUsage());
-    };
-
-    updateUsage();
-    window.addEventListener('akansha-token-usage-updated', updateUsage as EventListener);
-    window.addEventListener('storage', updateUsage);
-    return () => {
-      window.removeEventListener('akansha-token-usage-updated', updateUsage as EventListener);
-      window.removeEventListener('storage', updateUsage);
-    };
-  }, []);
 
   return (
     <header className="h-14 border-b border-border bg-card/80 backdrop-blur-sm flex items-center px-4 gap-3 shrink-0 relative z-40">
@@ -90,13 +34,10 @@ export default function Topbar({ onMobileMenuOpen }: TopbarProps) {
 
       <div className="flex-1" />
 
-      {/* Token usage indicator */}
+      {/* Stable app status indicator. Keep this SSR-safe to avoid hydration mismatches. */}
       <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted text-xs font-medium text-muted-foreground">
         <Zap size={12} className="text-amber-400" />
-        <span className="font-mono tabular-nums">{tokenUsage.tokens.toLocaleString()}</span>
-        <span>/</span>
-        <span className="font-mono tabular-nums">{formatTokenLimit(tokenUsage.maxTokens)}</span>
-        <span className="text-muted-foreground/60">tokens</span>
+        <span>Fast ready</span>
       </div>
 
       {/* Notifications */}

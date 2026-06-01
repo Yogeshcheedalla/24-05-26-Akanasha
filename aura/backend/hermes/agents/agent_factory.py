@@ -22,6 +22,9 @@ AGENT_TYPES = {
     "AutomationAgent",
     "DataAgent",
     "FileAgent",
+    "ShoppingAgent",
+    "BookingAgent",
+    "ConciergeAgent",
 }
 
 PERSISTENT_CORE_AGENTS = [
@@ -88,6 +91,7 @@ class AgentFactory:
         return self.get(agent_name) or {"id": agent_id, "agent_name": agent_name}
 
     def ensure_persistent_core(self) -> list[dict[str, Any]]:
+        self._make_room_for_core_agents()
         agents: list[dict[str, Any]] = []
         for agent_type in PERSISTENT_CORE_AGENTS:
             agents.append(
@@ -101,6 +105,24 @@ class AgentFactory:
                 )
             )
         return agents
+
+    def _make_room_for_core_agents(self) -> None:
+        with self.store.connect(self.store.files.agents) as conn:
+            active_core = conn.execute(
+                "SELECT COUNT(*) AS count FROM agents WHERE status = 'active' AND agent_name LIKE 'Core:%'"
+            ).fetchone()["count"]
+            missing_core_slots = max(0, len(PERSISTENT_CORE_AGENTS) - active_core)
+            active_total = conn.execute("SELECT COUNT(*) AS count FROM agents WHERE status = 'active'").fetchone()["count"]
+            if active_total + missing_core_slots <= self.MAX_AGENTS:
+                return
+            conn.execute(
+                """
+                UPDATE agents
+                SET status = 'retired', updated_at = ?
+                WHERE status = 'active' AND agent_name NOT LIKE 'Core:%'
+                """,
+                (utc_now(),),
+            )
 
     def create_temporary_worker(
         self,

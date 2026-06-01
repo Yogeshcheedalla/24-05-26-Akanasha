@@ -8,7 +8,8 @@ pipeline.
 The latest adaptive layer extends Hermes beyond "agent routing" into an AI
 operating system: cognitive compression, governed tool access, world modeling,
 predictive assistance, adaptive UI modes, multimodal context, workflow
-generation, background jobs, and a skill marketplace.
+generation, background jobs, a skill marketplace, a Cognitive Digital Twin, and
+future simulation.
 
 ## Akansha Cognitive Core
 
@@ -38,9 +39,16 @@ flowchart TD
     K --> D["Thousands of dynamic skills"]
     B --> WM["WORLD MODEL<br/>User | Projects | Goals | Relationships | Habits"]
     WM --> PR["PREDICTIVE ASSISTANT<br/>Suggestions | Risks | Deadlines | Workflow prediction"]
+    WM --> DT["COGNITIVE DIGITAL TWIN<br/>Habits | Preferences | Decisions | Work Patterns"]
+    DT --> FS["FUTURE SIMULATION<br/>Outcomes | Risks | Timelines | Decisions"]
+    FS --> RR["PREDICTIVE RECOMMENDATIONS<br/>Actions | Alerts | Optimizations"]
     C --> TL["UNIVERSAL TOOL LAYER<br/>MCP | APIs | Browser | Desktop | DB | Plugins"]
     C --> WF["WORKFLOW GENERATOR<br/>Intent → Agents → Skills → Validation → Learning"]
     K --> MP["SKILL MARKETPLACE<br/>Install | Update | Remove | Rollback"]
+    WF --> XA["EXPLAINABLE AI + TIME MACHINE REPLAY"]
+    XA --> OB["COGNITIVE OBSERVATORY<br/>Health | Tokens | Goals | Agents | Skills"]
+    OB --> SE["SELF EVOLUTION ENGINE<br/>Prompts | Memory | Workflows | Tools | Agents"]
+    B --> KG["KNOWLEDGE GRAPH<br/>Users | Projects | Dependencies | Goals | Skills"]
 ```
 
 ### Persistent Core Agents
@@ -170,12 +178,117 @@ suggest the next best action. Examples:
 - artifact tasks trigger file verification
 - deadlines trigger reminders or study/work plans
 
+### Cognitive Digital Twin
+
+`CognitiveDigitalTwinEngine` is the personal model layer. It does not create a
+new assistant or a standalone memory store. It writes into the same Hermes
+database and observes the same orchestration flow used by the memory engine,
+goal engine, learning engine, planner, workflow engine, skill ecosystem, agent
+system, and dashboard.
+
+The twin stores structured owner signals:
+
+- habits
+- preferences
+- goals
+- projects
+- learning patterns
+- work patterns
+- decision history
+- execution history
+- productivity patterns
+- behavior trends
+
+The twin is updated during task processing, continuous learning, and explicit
+API calls. It deduplicates similar signals, tracks confidence, increments usage,
+and rebuilds a compact profile that can be used for planning without replaying
+entire conversations.
+
+### Future Simulation Engine
+
+`FutureSimulationEngine` uses the digital twin profile, the current task,
+planner context, prediction context, executive brain context, and workflow
+signals to compare possible future paths.
+
+It generates:
+
+- success probability
+- risk score
+- timeline estimate
+- resource estimate
+- confidence score
+- predicted outcomes
+- alternative scenarios
+- decision rank
+- personal fit score
+- risk heatmap
+- goal forecast
+- decision comparison
+- timeline projection
+- opportunity prediction
+
+Example simulation domains already implemented:
+
+| Domain | Scenario examples |
+| --- | --- |
+| Startup and business goals | Build MVP first, build audience first, sell services first |
+| Buying decisions | Choose high-performance option, choose lower-price option, wait and verify price |
+| Weekly scheduling | Front-load testing, distribute tasks evenly, delay risky tasks |
+| Study planning | Practice weak topics first, follow syllabus order, take mock tests first |
+| Deployment | Validate tests/env first, deploy with rollback, staged release |
+| Generic planning | Fast execution path, quality-first path, low-risk validation path |
+
+### Predictive Recommendation Engine
+
+`PredictiveRecommendationEngine` converts a future simulation into practical
+next steps:
+
+- proactive actions
+- risk alerts
+- optimization suggestions
+- goal improvements
+- approval-aware execution notes
+
+The engine is intentionally recommendation-first. It can suggest, warn, and
+prepare workflows, but sensitive actions still go through Hermes safety gates
+and explicit approval rules.
+
+### Digital Twin API Surface
+
+```text
+POST /api/cognitive/digital-twin/observe
+GET  /api/cognitive/digital-twin/profile
+GET  /api/cognitive/digital-twin/signals
+POST /api/cognitive/future-simulations
+GET  /api/cognitive/future-simulations
+POST /api/cognitive/predictive-recommendations
+GET  /api/cognitive/predictive-recommendations
+```
+
+### Digital Twin Dashboard Panels
+
+The Cognitive Observatory dashboard now exposes:
+
+- Twin Confidence
+- Future Simulations
+- Decision Rank
+- Timeline Pressure
+- Digital Twin Profile
+- Future Predictions
+- Risk Heatmaps
+- Goal Forecasts
+- Decision Comparisons
+- Timeline Projections
+- Predictive Recommendations
+
 ### Adaptive UI Engine
 
 `AdaptiveUIEngine` chooses a mode configuration without mutating the frontend:
 
 - coding
 - research
+- startup
+- learning
 - voice
 - planning
 - business
@@ -183,6 +296,171 @@ suggest the next best action. Examples:
 
 Each mode returns recommended panels, default artifacts, and the response style
 the UI can use.
+
+### Cognitive Observatory Dashboard
+
+`CognitiveObservatoryDashboard` turns Hermes internals into a dashboard-ready
+snapshot:
+
+- active goals
+- active agents
+- skills triggered
+- memory usage
+- task execution graph
+- prediction confidence
+- system health
+- token usage
+- learning progress
+- recent experiments and autonomous test reports
+
+Snapshots are stored in `observatory_snapshots` so the dashboard can show a
+live view and a history view.
+
+### Self Evolution Engine
+
+`SelfEvolutionEngine` continuously proposes bounded improvements for:
+
+- prompt quality
+- memory retrieval
+- workflow order
+- tool selection
+- agent allocation
+
+It does not rewrite stable logic automatically. Proposals are stored as
+`self_evolution_events` and require validation before promotion.
+
+### Explainable AI Layer
+
+`ExplainableAIEngine` records why Akansha selected a workflow, agents, skills,
+and tools. Every task plan can now include:
+
+- reason
+- confidence
+- workflow selection
+- agent selection
+- skill selection
+- tool selection
+- risk level
+
+### Time Machine Replay
+
+`TimeMachineReplayEngine` records replay events for task, failure, workflow,
+learning, experiment, and test history. Replay reconstructs what happened
+without re-running tools or mutating state.
+
+### AI Experiment Lab
+
+`AIExperimentLab` compares prompts, workflows, and agent strategies. It stores
+variant scores, metrics, winner selection, and confidence across accuracy,
+latency, safety, cost, and stability.
+
+### Knowledge Graph Engine
+
+`KnowledgeGraphEngine` stores explicit facts and links for relationships,
+projects, dependencies, goals, skills, users, documents, and tasks. It mirrors
+supported entities into `WorldModelEngine` so the new graph extends existing
+memory/world-model behavior instead of creating an isolated subsystem.
+
+### Autonomous Testing Engine
+
+`AutonomousTestingEngine` creates test plans, records reports, compares runs,
+detects regressions, and feeds observatory health metrics.
+
+### Autonomous Action Platform
+
+The action platform extends Hermes directly instead of creating a standalone
+automation stack. It reuses the existing planner, memory, skill routing,
+coordinator agents, tool layer, safety validation, observatory, and learning
+flow.
+
+Implemented engines:
+
+- `AutonomousCommerceEngine` extracts shopping requirements, compares candidate
+  products, scores price/specs/reviews/delivery/history/preferences, and blocks
+  purchase execution behind approval.
+- `AutonomousBookingEngine` handles flights, hotels, restaurants, events,
+  appointments, tickets, and transport with schedule validation, duplicate
+  checks, and approval gates.
+- `VerificationRecheckEngine` validates availability, prices, expired links,
+  schedule conflicts, payment risk, duplicate bookings, and irreversible action
+  risk before execution.
+- `LifeAutomationEngine` creates governed plans for reminders, subscriptions,
+  bills, deadlines, email summaries, follow-ups, and scheduled tasks.
+- `PersonalBuyingIntelligence` stores non-payment buying preferences such as
+  budget patterns, favorite brands, quality preferences, and risk tolerance.
+- `DigitalConciergeEngine` plans travel, restaurants, meetings, events, gifts,
+  trips, and daily schedules with verification.
+- `MultiServiceExecutionBus` routes approved workflows through email, calendar,
+  browser, desktop automation, shopping, booking, maps, payments, documents,
+  task systems, APIs, and databases without bypassing safety.
+
+Safety contract:
+
+- Akansha never purchases, sends payments, confirms bookings, deletes accounts,
+  shares private information, or performs irreversible actions without explicit
+  user approval.
+- Every governed action records a verification audit, confidence score, rollback
+  plan, monitoring plan, and execution-bus event.
+- Commerce and booking engines refuse to hallucinate products, prices, or
+  availability when verified candidates are not available.
+
+### Universal Autonomous Cognitive Operating System
+
+The universal operating layer is the missing execution control plane around the
+existing Hermes architecture. It does not create a duplicate agent stack. It
+connects directly to the memory engine, planner engine, workflow engine, goal
+engine, skill ecosystem, agent system, dashboard, learning engine, browser
+automation, desktop automation, voice assistant, safety system, and tool
+ecosystem.
+
+Implemented components:
+
+- `UniversalAutonomousExecutionEngine` records a task-level execution tree for
+  intent detection, classification, decomposition, complexity analysis,
+  CoordinatorAgent, skill selection, agent assignment, workflow generation,
+  execution planning, verification, learning update, and dashboard update.
+- `UncertaintyCollaborationEngine` detects missing information, conflicting
+  information, low prediction confidence, tool failure, uncertain assumptions,
+  authentication issues, unexpected results, execution blockers, and workflow
+  dead ends. It creates a focused user question instead of continuing blindly.
+- `SelfHealingEngine` records root cause analysis and recovery plans for retry,
+  alternate tools, path rebuild, agent switching, rollback, validation, and
+  continuation.
+- `ProactiveEventEngine` observes goals, deadlines, projects, calendar signals,
+  system activity, workflow delays, task failures, and patterns. It records
+  events such as deadline risk, deployment environment risk, artifact
+  validation, workflow recovery, and approval waiting.
+- `UniversalAutomationLayer` plans browser actions, desktop actions, documents,
+  files, emails, calendars, API calls, data processing, research tasks,
+  development tasks, and multi-step workflows through approval and verification
+  loops.
+- `CognitiveHealthEngine` monitors memory usage, agent activity, tool failures,
+  execution latency, prediction accuracy, workflow efficiency, resource
+  consumption, hallucination signals, and learning quality.
+
+Universal task domains:
+
+- personal
+- productivity
+- research
+- development
+- automation
+- documents
+- communication
+- scheduling
+- education
+- analysis
+- planning
+- travel
+- monitoring
+- media
+- data processing
+- business
+- file management
+- system management
+- API workflows
+- browser workflows
+- desktop workflows
 
 ### Multimodal Context Graph
 
@@ -273,6 +551,47 @@ Base prefix: `/api/cognitive`
 - `GET /background/jobs`
 - `POST /background/jobs`
 - `POST /background/jobs/run-due`
+- `GET /observatory/snapshot`
+- `GET /observatory/history`
+- `POST /evolution/optimize`
+- `POST /evolution/promote`
+- `GET /evolution/events`
+- `GET /explainability/actions`
+- `POST /replay/record`
+- `GET /replay`
+- `GET /replay/task`
+- `POST /experiments/run`
+- `GET /experiments`
+- `POST /knowledge/entities`
+- `POST /knowledge/links`
+- `POST /knowledge/ingest`
+- `GET /knowledge/graph`
+- `POST /testing/plan`
+- `POST /testing/report`
+- `POST /testing/compare`
+- `GET /testing/reports`
+- `POST /commerce/plan`
+- `GET /commerce/requests`
+- `POST /booking/plan`
+- `GET /booking/requests`
+- `POST /verify/action`
+- `GET /verify/audits`
+- `POST /life-automation/plan`
+- `GET /life-automation/plans`
+- `GET /buying-intelligence/profile`
+- `POST /buying-intelligence/preferences`
+- `POST /concierge/plan`
+- `GET /concierge/plans`
+- `POST /execution-bus/plan`
+- `GET /execution-bus/events`
+- `GET /action-platform/metrics`
+- `GET /universal-execution/recent`
+- `GET /collaboration/pending`
+- `POST /collaboration/{question_id}/resolve`
+- `GET /self-healing/recent`
+- `GET /proactive-events`
+- `GET /automation/plans`
+- `GET /cognitive-health/latest`
 - `GET /metrics`
 - `POST /loop/run-once`
 
@@ -287,6 +606,23 @@ Hermes keeps its own SQLite files under `backend/hermes/database/`:
 
 These files are local runtime data and are ignored by Git through the existing
 `*.db` rule.
+
+Action-platform storage is initialized inside the same Hermes database layer:
+
+- `commerce_requests`
+- `booking_requests`
+- `verification_audits`
+- `life_automation_plans`
+- `buying_intelligence_profiles`
+- `concierge_plans`
+- `execution_bus_events`
+- `action_platform_metrics`
+- `universal_executions`
+- `collaboration_questions`
+- `self_healing_events`
+- `proactive_events`
+- `automation_plans`
+- `cognitive_health_snapshots`
 
 Run migrations manually:
 
@@ -352,6 +688,61 @@ Recommended temporary worker counts:
 | Install marketplace skill twice | Second install is rejected as already installed |
 | Update marketplace skill | Creates a new version with rollback to previous package |
 | Schedule a monitor job | Job is bounded by max_runs and becomes completed after execution |
+| Create "Build an AI startup in 6 months" goal | Goal graph stores tasks, milestones, project plan, opportunities, and progress |
+| Simulate two MVP decisions | Decision engine ranks choices with success probability, risk, impact, cost, and confidence |
+| Plan a PDF workflow | Explainable AI stores selected workflow, agents, skills, tools, risk, and confidence |
+| Replay a workflow event | Time Machine returns the stored timeline without re-executing tools |
+| Compare two workflow variants | Experiment Lab scores both variants and stores the winner |
+| Add user/project knowledge | Knowledge Graph stores facts and mirrors supported nodes into World Model |
+| Record passed and failed test reports | Autonomous Testing compares regressions and feeds observatory health |
 
 The design keeps simple tasks cheap and stable, while multi-tool tasks use
 temporary workers that cannot recursively spawn or write permanent memory.
+
+## Autonomous Goal Engine
+
+Hermes now includes a Digital Executive Brain that converts long-term objectives
+into trackable operating-system state.
+
+```text
+User Goal
+  -> Goal Analyzer
+  -> Goal Decomposition
+  -> Dependency Mapping
+  -> Priority Assignment
+  -> Milestone Generation
+  -> Goal Graph Storage
+  -> Project Manager Tracking
+  -> Opportunity Detection
+  -> Decision Simulation
+  -> Learning Feedback
+```
+
+Stored goal fields include:
+
+- goal_id
+- subgoals and executable tasks
+- dependencies
+- priority
+- deadline
+- progress
+- status
+- goal_type
+- goal_owner
+- goal_context
+- estimated_effort
+- completion_score
+- goal_health
+- blocked_reason
+- risk_score
+- milestones
+- execution_state
+
+Safety controls:
+
+- duplicate goal prevention through fingerprints
+- circular dependency prevention
+- bounded project plans
+- blocked task detection
+- decision confidence scoring
+- no autonomous external action without a separate permission layer

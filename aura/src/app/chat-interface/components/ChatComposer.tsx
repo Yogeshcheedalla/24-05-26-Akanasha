@@ -3,6 +3,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { Paperclip, Mic, MicOff, Send, Square, BookMarked, Image as ImageIcon, X, FileText } from 'lucide-react';
 import {
+  autoRouteCognitivePrompt,
   expandSlashCommand,
   getSlashCommandSuggestions,
   type SlashCommandDefinition,
@@ -17,6 +18,15 @@ interface ChatComposerProps {
   selectedModel: string;
   onToggleMic?: () => void;
   isListening?: boolean;
+}
+
+function stableFileSignature(file: File) {
+  const identity = file.name.startsWith('pasted-screenshot-') ? 'clipboard-image' : file.name;
+  return `${identity}:${file.type || 'application/octet-stream'}:${file.size}`;
+}
+
+function stableClipboardImageSignature(file: File) {
+  return `${file.type || 'image/png'}:${file.size}`;
 }
 
 export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isStreaming, onToggleMic, isListening }: ChatComposerProps) {
@@ -167,7 +177,7 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
     if (!canSend) return;
     shouldRefocusAfterStreamRef.current = true;
     const messageText = content.trim()
-      ? expandSlashCommand(content)
+      ? autoRouteCognitivePrompt(expandSlashCommand(content))
       : 'Analyze the attached image or screenshot carefully. Read visible text, inspect the UI, and explain what you see with reasoning.';
     onSend(messageText, attachments.length > 0 ? attachments : undefined);
     setComposerContent('');
@@ -177,7 +187,17 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
 
   const addFiles = useCallback((files: File[]) => {
     if (files.length === 0) return;
-    setAttachments((prev) => [...prev, ...files].slice(0, 5));
+    setAttachments((prev) => {
+      const seen = new Set(prev.map(stableFileSignature));
+      const uniqueFiles = files.filter((file) => {
+        const signature = stableFileSignature(file);
+        if (seen.has(signature)) return false;
+        seen.add(signature);
+        return true;
+      });
+      if (uniqueFiles.length === 0) return prev;
+      return [...prev, ...uniqueFiles].slice(0, 5);
+    });
     focusAndResize();
   }, [focusAndResize]);
 
@@ -188,16 +208,20 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
 
   const extractClipboardImages = useCallback((clipboardData: DataTransfer | null | undefined) => {
     const clipboardItems = Array.from(clipboardData?.items || []);
+    const seenClipboardImages = new Set<string>();
     const pastedImages = clipboardItems
       .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
       .map((item, index) => {
         const file = item.getAsFile();
         if (!file) return null;
+        const sourceSignature = stableClipboardImageSignature(file);
+        if (seenClipboardImages.has(sourceSignature)) return null;
+        seenClipboardImages.add(sourceSignature);
         const extension = file.type.split('/')[1] || 'png';
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         return new File([file], `pasted-screenshot-${timestamp}-${index + 1}.${extension}`, {
           type: file.type,
-          lastModified: Date.now(),
+          lastModified: file.lastModified || 0,
         });
       })
       .filter((file): file is File => Boolean(file));
@@ -210,7 +234,7 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
     if (pastedImages.length === 0) return false;
 
     const signature = pastedImages
-      .map((file) => `${file.type}:${file.size}:${file.name}`)
+      .map(stableFileSignature)
       .join('|');
     const previous = lastClipboardImagePasteRef.current;
     const now = Date.now();
@@ -226,16 +250,8 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (!attachClipboardImages(e.clipboardData)) return;
     e.preventDefault();
-  }, [attachClipboardImages]);
-
-  React.useEffect(() => {
-    const handleWindowPaste = (event: ClipboardEvent) => {
-      if (!attachClipboardImages(event.clipboardData)) return;
-      event.preventDefault();
-    };
-
-    window.addEventListener('paste', handleWindowPaste);
-    return () => window.removeEventListener('paste', handleWindowPaste);
+    e.stopPropagation();
+    e.nativeEvent.stopImmediatePropagation();
   }, [attachClipboardImages]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -261,7 +277,7 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
   };
 
   return (
-    <div className="px-4 pb-4 pt-2">
+    <div className="px-4 pb-4 pt-2" data-akansha-chat-composer="true">
       {isDragging && (
         <div className="absolute inset-4 rounded-xl border-2 border-dashed border-[#6C47FF] bg-[#6C47FF]/5 z-10 flex items-center justify-center pointer-events-none">
           <p className="text-sm font-medium text-[#6C47FF]">Drop files to attach</p>
@@ -285,7 +301,7 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
                 {getFileIcon(file)}
                 <span className="font-mono text-foreground max-w-[120px] truncate">{file.name}</span>
                 <span className="text-muted-foreground">{(file.size / 1024).toFixed(0)}KB</span>
-                <button onClick={() => removeAttachment(i)} className="text-muted-foreground hover:text-red-500 transition-colors ml-1">
+                <button type="button" onClick={() => removeAttachment(i)} className="text-muted-foreground hover:text-red-500 transition-colors ml-1">
                   <X size={11} />
                 </button>
               </div>
@@ -366,6 +382,7 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
               onChange={e => handleFileSelect(e.target.files)}
             />
             <button
+              type="button"
               onClick={() => fileInputRef.current?.click()}
               className="p-2 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
               title="Attach files"
@@ -373,6 +390,7 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
               <Paperclip size={16} />
             </button>
             <button
+              type="button"
               onClick={onOpenPromptLibrary}
               className="p-2 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
               title="Prompt templates"
@@ -381,6 +399,7 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
             </button>
             {onToggleMic && (
               <button
+                type="button"
                 onClick={onToggleMic}
                 className={`p-2 rounded-lg transition-colors ${
                   isListening
@@ -409,6 +428,7 @@ export default function ChatComposer({ onSend, onStop, onOpenPromptLibrary, isSt
             )}
             {!isStreaming || canSend ? (
               <button
+                type="button"
                 onClick={handleSend}
                 disabled={!canSend}
                 className={`

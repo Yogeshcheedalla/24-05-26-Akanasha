@@ -93,7 +93,7 @@ async function sendDesktopNotification(title: string, body: string) {
       body: JSON.stringify({ title, body }),
     });
   } catch (error) {
-    console.error('Failed to send desktop planner notification:', error);
+    console.warn('[Akansha planner] recovered desktop notification failure:', error);
   }
 }
 
@@ -206,7 +206,7 @@ export default function PlannerReminderBridge() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       }).catch((error) => {
-        console.error('Failed to sync planner reminders to backend scheduler:', error);
+        console.warn('[Akansha planner] recovered reminder sync failure:', error);
       });
     };
 
